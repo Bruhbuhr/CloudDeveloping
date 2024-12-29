@@ -1,24 +1,29 @@
-require('dotenv').config(); // Load environment variables from .env file
+import * as dotenv from 'dotenv';
+dotenv.config(); // Load environment variables from .env file
 
-const express = require('express');
-const bodyParser = require('body-parser');
-const pg = require('pg');
-const redis = require('redis');
-const bcrypt = require('bcrypt');
-const validator = require('validator'); // For input validation
-const otpGenerator = require('otp-generator'); // For OTP generation
-const jwt = require('jsonwebtoken'); // For JWTs
+import express from 'express';
+import bodyParser from 'body-parser'; // Import body-parser
+const { json } = bodyParser;  // Use json from body-parser
+import pg from 'pg';
+const { Pool } = pg;
+import redis from 'redis';
+import { hash, compare } from 'bcrypt';
+import validator from 'validator'; // Import validator
+const { isEmail } = validator; // Use isEmail from validator
+import otpGenerator from 'otp-generator'; // For OTP generation
+import jwt from 'jsonwebtoken'; // For JWTs
 
 const app = express();
-const port = 3000; 
+const port = 3000;
 
 // PostgreSQL configuration
-const pool = new pg.Pool({
+const pool = new Pool({
     user: process.env.DB_USER,
     host: process.env.DB_HOST,
     database: process.env.DB_DATABASE,
     password: process.env.DB_PASSWORD,
     port: 5432,
+    ssl: false
 });
 
 // Redis configuration
@@ -41,8 +46,8 @@ const redisClient = redis.createClient({
 
 redisClient.on('error', (err) => console.log('Redis Client Error', err));
 
-// Middleware
-app.use(bodyParser.json());
+//Middleware
+app.use(json());
 
 // --- Helper Functions ---
 
@@ -54,13 +59,13 @@ function generateOtp() {
     });
 }
 
-// Function to generate JWT
-function generateJwt(userId) {
-    // Replace with your actual JWT secret
-    const secretKey = process.env.JWT_SECRET || 'your_jwt_secret';
-    const token = jwt.sign({ userId }, secretKey, { expiresIn: '1h' }); // 1 hour expiration
-    return token;
-}
+// // Function to generate JWT
+// function generateJwt(userId) {
+//     // Replace with your actual JWT secret
+//     const secretKey = process.env.JWT_SECRET || 'your_jwt_secret';
+//     const token = jwt.sign({ userId }, secretKey, { expiresIn: '1h' }); // 1 hour expiration
+//     return token;
+// }
 
 // --- API Routes ---
 
@@ -73,13 +78,13 @@ app.post('/register', async (req, res) => {
         if (!email || !username || !password) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
-        if (!validator.isEmail(email)) {
+        if (!isEmail(email)) {
             return res.status(400).json({ error: 'Invalid email format' });
         }
 
         // 2. Hash the password
         const saltRounds = 10;
-        const hashedPassword = await bcrypt.hash(password, saltRounds);
+        const hashedPassword = await hash(password, saltRounds);
 
         // 3. Save user data to PostgreSQL
         const result = await pool.query(
@@ -108,7 +113,7 @@ app.post('/login', async (req, res) => {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
         const user = result.rows[0];
-        const passwordMatch = await bcrypt.compare(password, user.password);
+        const passwordMatch = await compare(password, user.password);
         if (!passwordMatch) {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
@@ -145,13 +150,13 @@ app.post('/verify', async (req, res) => {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
         const user = result.rows[0];
-        const passwordMatch = await bcrypt.compare(password, user.password);
+        const passwordMatch = await compare(password, user.password);
         if (!passwordMatch) {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        // 4. Generate JWT
-        const token = generateJwt(user.id);
+        // // 4. Generate JWT
+        // const token = generateJwt(user.id);
 
         res.json({ message: 'Verification successful', token });
     } catch (error) {
