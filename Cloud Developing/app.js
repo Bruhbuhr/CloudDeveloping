@@ -2,16 +2,17 @@ import * as dotenv from 'dotenv';
 dotenv.config(); // Load environment variables from .env file
 
 import express from 'express';
-import bodyParser from 'body-parser'; // Import body-parser
-const { json } = bodyParser;  // Use json from body-parser
+import bodyParser from 'body-parser';
+const { json } = bodyParser; 
 import pg from 'pg';
 const { Pool } = pg;
-import redis from 'redis';
+import Redis from 'ioredis';
 import { hash, compare } from 'bcrypt';
-import validator from 'validator'; // Import validator
-const { isEmail } = validator; // Use isEmail from validator
-import otpGenerator from 'otp-generator'; // For OTP generation
-import jwt from 'jsonwebtoken'; // For JWTs
+import validator from 'validator';
+const { isEmail } = validator;
+import otpGenerator from 'otp-generator';
+import jwt from 'jsonwebtoken';
+import session from 'express-session';
 
 const app = express();
 const port = 3000;
@@ -26,27 +27,16 @@ const pool = new Pool({
     ssl: false
 });
 
-// Redis configuration
-const redisClient = redis.createClient({
-    socket: {
-        host: process.env.REDIS_HOST,
-        port: 6379,
-    },
+// --- Redis configuration (using ioredis) ---
+const redisClient = new Redis({ 
+    host: process.env.REDIS_HOST,
+    port: 6379,
 });
 
-// Connect to Redis
-(async () => {
-    try {
-        await redisClient.connect();
-        console.log('Connected to Redis');
-    } catch (error) {
-        console.error('Error connecting to Redis:', error);
-    }
-})();
+redisClient.on('connect', () => console.log('Connected to Redis'));
+redisClient.on('error', (err) => console.error('Redis Client Error', err));
 
-redisClient.on('error', (err) => console.log('Redis Client Error', err));
-
-//Middleware
+// Middleware
 app.use(json());
 
 // --- Helper Functions ---
@@ -59,13 +49,63 @@ function generateOtp() {
     });
 }
 
-// // Function to generate JWT
-// function generateJwt(userId) {
-//     // Replace with your actual JWT secret
-//     const secretKey = process.env.JWT_SECRET || 'your_jwt_secret';
-//     const token = jwt.sign({ userId }, secretKey, { expiresIn: '1h' }); // 1 hour expiration
-//     return token;
-// }
+// Function to generate JWT 
+function generateJwt(userId) {
+    const secretKey = process.env.JWT_SECRET || 'your_jwt_secret';
+    const token = jwt.sign({ userId }, secretKey, { expiresIn: '1h' }); 
+    return token;
+}
+
+// --- Session Middleware ---
+app.use(
+    session({
+        secret: process.env.SESSION_SECRET || 'your-session-secret',
+        resave: false,
+        saveUninitialized: true,
+        cookie: {
+            secure: false,
+            httpOnly: true,
+            maxAge: 300000,
+        },
+        store: new (class extends session.Store {
+            constructor(options = {}) {
+                super(options);
+                this.redisClient = redisClient;
+            }
+
+            async get(key, callback) {
+                try {
+                    const value = await this.redisClient.get(key);
+                    if (value) {
+                        callback(null, JSON.parse(value));
+                    } else {
+                        callback(null, null);
+                    }
+                } catch (err) {
+                    callback(err);
+                }
+            }
+
+            async set(key, value, callback) {
+                try {
+                    await this.redisClient.set(key, JSON.stringify(value), 'EX', 300);
+                    callback(null);
+                } catch (err) {
+                    callback(err);
+                }
+            }
+
+            async destroy(key, callback) {
+                try {
+                    await this.redisClient.del(key);
+                    callback(null);
+                } catch (err) {
+                    callback(err);
+                }
+            }
+        })(),
+    })
+);
 
 // --- API Routes ---
 
@@ -122,9 +162,28 @@ app.post('/login', async (req, res) => {
         const otp = generateOtp();
 
         // 3. Store OTP in Redis with expiration
-        await redisClient.set(email, otp, 'EX', 300); // Expire in 5 minutes
+        await redisClient.set(email, otp, 'EX', 300);
 
-        res.json({ otp, message: 'OTP code generated. Please verify.' });
+        // *** Set session data ***
+        req.session.userId = user.id; 
+        req.session.otpVerified = false;
+
+        // *** Save the session before sending the response ***
+        req.session.save((err) => {
+            if (err) {
+                console.error('Error saving session:', err);
+                return res.status(500).json({ error: 'Login failed' });
+            }
+
+            // *** Send the session ID as a cookie in the response ***
+            res.cookie('connect.sid', req.sessionID, {
+                httpOnly: true,
+                secure: false, // Set to true if using HTTPS
+                maxAge: 300000, // 5 minutes
+            });
+
+            res.json({ otp, message: 'OTP code generated. Please verify.' });
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Login failed' });
@@ -133,30 +192,35 @@ app.post('/login', async (req, res) => {
 
 // /verify route
 app.post('/verify', async (req, res) => {
-    const { email, password, otp } = req.body;
+    const { otp } = req.body;
 
     try {
-        // 1. Get OTP from Redis
+        // 1. Get user ID from session
+        if (!req.session.userId) {
+            return res.status(401).json({ error: 'Not logged in' });
+        }
+        const userId = req.session.userId;
+
+        // 2. Get user's email from the database
+        const result = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+        if (result.rows.length === 0) {
+            return res.status(401).json({ error: 'User not found' });
+        }
+        const email = result.rows[0].email;
+
+        // 3. Get OTP from Redis
         const storedOtp = await redisClient.get(email);
 
-        // 2. Validate OTP
+        // 4. Validate OTP
         if (!storedOtp || storedOtp !== otp) {
             return res.status(401).json({ error: 'Invalid or expired OTP code' });
         }
 
-        // 3. (Optional) Verify email and password again
-        const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        if (result.rows.length === 0) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-        const user = result.rows[0];
-        const passwordMatch = await compare(password, user.password);
-        if (!passwordMatch) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
+        // 5. Mark OTP as verified in the session
+        req.session.otpVerified = true;
 
-        // // 4. Generate JWT
-        // const token = generateJwt(user.id);
+        // 6. Generate JWT
+        const token = generateJwt(userId);
 
         res.json({ message: 'Verification successful', token });
     } catch (error) {
@@ -165,9 +229,47 @@ app.post('/verify', async (req, res) => {
     }
 });
 
+app.post('/buy-ticket', async (req, res) => {
+    const { expiredDate } = req.body;
+    const image = `https://source.unsplash.com/random/100x100/?ticket`; // Random image URL
+    const qr_code = 'line.png'; // Placeholder QR code
+
+    try {
+        // 1. Get user ID from session
+        if (!req.session.userId) {
+            return res.status(401).json({ error: 'Not logged in' });
+        }
+        const userId = req.session.userId;
+
+        // 2. Validate expiredDate
+        const parsedExpiredDate = new Date(expiredDate);
+        if (isNaN(parsedExpiredDate)) {
+            return res.status(400).json({ error: 'Invalid expiredDate format' });
+        }
+        if (parsedExpiredDate <= new Date()) {
+            return res.status(400).json({ error: 'expiredDate must be in the future' });
+        }
+
+        // 3. Create a new ticket in the database
+        const ticketResult = await pool.query(
+            'INSERT INTO tickets (user_id, expiredDate, image, qr_code) VALUES ($1, $2, $3, $4) RETURNING *',
+            [userId, expiredDate, image, qr_code]
+        );
+
+        // 4. Send a success response
+        res.status(201).json({
+            message: 'Ticket purchased successfully',
+            ticket: ticketResult.rows[0]
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Failed to purchase ticket' });
+    }
+});
+
 // --- End of API Routes ---
 
 // Start the server
-app.listen(port, () => {
+app.listen(port, '0.0.0.0', () => {
     console.log(`Server listening on port ${port}`);
 });
