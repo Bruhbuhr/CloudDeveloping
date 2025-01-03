@@ -1,0 +1,231 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Prefix:
+    Type: String
+    Description: Prefix for naming resources
+  Env:
+    Type: String
+    Description: Environment (e.g., dev, prod)
+
+Resources:
+  # Messaging/Notification
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub "Ticketery"
+      FifoTopic: False
+      Tags: 
+        - Key: Name
+          Value: !Sub "${Prefix}-${Env}-app-notification"
+      TopicName: !Sub "${Prefix}-${Env}-app-notification"
+
+  # SNS Topic Policy to allow access from LabRole
+  SNSPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref SNSTopic
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "__default_statement_ID",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Action": [
+                "SNS:GetTopicAttributes",
+                "SNS:SetTopicAttributes",
+                "SNS:AddPermission",
+                "SNS:RemovePermission",
+                "SNS:DeleteTopic",
+                "SNS:Subscribe",
+                "SNS:ListSubscriptionsByTopic",
+                "SNS:Publish"
+              ],
+              "Resource": "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${Prefix}-${Env}-app-notification",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceOwner": "${AWS::AccountId}"
+                }
+              }
+            },
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "states.amazonaws.com"
+              },
+              "Action": [
+                "SNS:GetTopicAttributes",
+                "SNS:SetTopicAttributes",
+                "SNS:AddPermission",
+                "SNS:RemovePermission",
+                "SNS:DeleteTopic",
+                "SNS:Subscribe",
+                "SNS:ListSubscriptionsByTopic",
+                "SNS:Publish"
+              ],
+              "Resource": "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${Prefix}-${Env}-app-notification"
+            }
+          ]
+        }
+
+  # Step Functions State Machine for SNS subscription with email validation
+  StepFunctionsStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "${Prefix}-${Env}-sns-subscription"
+      RoleArn: !Sub "arn:aws:iam::${AWS::AccountId}:role/asm-LabRole"
+      DefinitionString: !Sub |
+        {
+          "Comment": "State Machine to handle SNS subscription",
+          "StartAt": "ValidateInput",
+          "States": {
+            "ValidateInput": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.email",
+                  "StringMatches": "*@*.*",
+                  "Next": "SendSubscriptionEmail"
+                }
+              ],
+              "Default": "InvalidInput"
+            },
+            "SendSubscriptionEmail": {
+              "Type": "Task",
+              "Parameters": {
+                "Protocol": "EMAIL",
+                "Endpoint.$": "$.email",
+                "TopicArn": "${SNSTopic}"
+              },
+              "Resource": "arn:aws:states:::aws-sdk:sns:subscribe",
+              "End": true
+            },
+            "InvalidInput": {
+              "Type": "Fail",
+              "Error": "InvalidInputError",
+              "Cause": "Invalid email address provided."
+            }
+          }
+        }
+
+  # API Gateway and associated resources
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties: 
+      Name: !Sub "${Prefix}-${Env}-api"
+      Description: API Gateway for managing serverless features
+      EndpointConfiguration:
+        Types: 
+          - REGIONAL
+
+  # '/subscribe' resource path
+  SubscribeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'subscribe'
+
+  # Step Functions API Gateway Integration
+  ApiRequestValidator:
+    Type: AWS::ApiGateway::RequestValidator
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      Name: "SubscribeRequestValidator"
+      ValidateRequestParameters: true
+      ValidateRequestBody: false
+
+  # '/subscribe' POST method
+  SubscribeMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref SubscribeResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      RequestValidatorId: !Ref ApiRequestValidator
+      RequestParameters:
+        method.request.querystring.email: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:states:action/StartExecution"
+        Credentials: !Sub "arn:aws:iam::${AWS::AccountId}:role/asm-LabRole"
+        RequestTemplates:
+          application/json: !Sub |
+            {
+              "stateMachineArn": "${StepFunctionsStateMachine}",
+              "input": "{ \"email\": \"$input.params().querystring.get('email')\" }"
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: |
+                {
+                  "message": "Execution started successfully",
+                  "executionArn": "$input.path('$.executionArn')"
+                }
+          - StatusCode: 400
+            ResponseTemplates:
+              application/json: |
+                {
+                  "error": "Bad Request",
+                  "message": "$input.path('$.errorMessage')"
+                }
+            SelectionPattern: "Invalid.*"
+      MethodResponses:
+        - StatusCode: 200
+        - StatusCode: 400
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: 
+      - SubscribeMethodPost
+    Properties: 
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: !Ref Env
+
+  UsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn:
+      - ApiDeployment
+    Properties:
+      Description: Usage Plan for API Gateway
+      ApiStages:
+        - ApiId: !Ref ApiGatewayRestApi
+          Stage: !Ref Env
+          Throttle:
+            "/subscribe/POST": 
+              RateLimit: 50.0
+              BurstLimit: 100
+      Quota:
+        Limit: 1000
+        Period: MONTH
+      Throttle:
+        RateLimit: 100.0
+        BurstLimit: 200
+      UsagePlanName: !Sub "${Prefix}-${Env}-usage-plan"
+
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties: 
+      Description: API Key
+      Name: !Sub "${Prefix}-${Env}-api-key"
+      Enabled: True
+      
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref UsagePlan
+
+Outputs:
+  ApiEndpoint:
+    Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Env}"
+    Description: Endpoint for the subscribe resource

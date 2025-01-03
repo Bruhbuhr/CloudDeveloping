@@ -1,0 +1,509 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Prefix:
+    Type: String
+    Description: Prefix for naming resources
+  Env:
+    Type: String
+    Description: Environment (e.g.2, dev, prod)
+  KeyPair:
+    Type: String
+    Description: Key pair for EC2 instance login
+  InstanceProfile:
+    Type: String
+    Description: IAM instance profile for EC2 instance SSM connection
+
+Resources:
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.18.102.0/23
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-vpc'
+
+  # Public Subnets
+  PublicSubnet1A:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.18.102.0/26
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-public-1a'
+
+  PublicSubnet1B:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.18.102.64/26
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-public-1b'
+
+  # App Subnets
+  AppSubnet1A:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.18.103.0/26
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-app-1a'
+
+  AppSubnet1B:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.18.103.64/26
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-app-1b'
+
+  # DB Subnets
+  DBSubnet1A:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.18.103.192/28
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-db-1a'
+
+  DBSubnet1B:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.18.103.208/28
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-db-1b'
+
+  # Internet Gateway for Public Subnets
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-igw'
+
+  AttachInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-public-rt'
+
+  # Public Route to the Internet
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Route Table Associations for Public Subnets
+  PublicRouteTableAssociation1A:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1A
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicRouteTableAssociation1B:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1B
+      RouteTableId: !Ref PublicRouteTable
+
+  # Route Table Associations for App Subnets
+  AppRouteTable1A:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-app-1a-rt'
+
+  AppRouteTable1B:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-app-1b-rt'
+
+  # DB Subnet Route Tables
+  DBRouteTable1A:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-db-1a-rt'
+
+  DBRouteTable1B:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-db-1b-rt'
+
+  # Route Table Associations for App Subnets
+  AppRouteTableAssociation1A:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AppSubnet1A
+      RouteTableId: !Ref AppRouteTable1A
+
+  AppRouteTableAssociation1B:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AppSubnet1B
+      RouteTableId: !Ref AppRouteTable1B
+
+  # Route Table Associations for DB Subnets
+  DBRouteTableAssociation1A:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DBSubnet1A
+      RouteTableId: !Ref DBRouteTable1A
+
+  DBRouteTableAssociation1B:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DBSubnet1B
+      RouteTableId: !Ref DBRouteTable1B
+
+  # RDS Subnet Group
+  RDSSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${Prefix}-${Env}-db-subnet-group'
+      DBSubnetGroupDescription: !Sub '${Prefix}-${Env}-db-subnet-group'
+      SubnetIds:
+        - !Ref DBSubnet1A
+        - !Ref DBSubnet1B
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-db-subnet-group'
+
+  # ElasiCache Subnet Group
+  ElastiCacheSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: !Sub '${Prefix}-${Env}-cache-subnet-group'
+      Description: !Sub '${Prefix}-${Env}-cache-subnet-group'
+      SubnetIds:
+        - !Ref DBSubnet1A
+        - !Ref DBSubnet1B
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-cache-subnet-group'
+
+  # PostgreSQL Parameter Group
+  PostgreSQLParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Family: postgres16
+      DBParameterGroupName: !Sub '${Prefix}-${Env}-postgres16-parameter-group'
+      Description: !Sub '${Prefix}-${Env}-postgres16-parameter-group'
+
+  # Redis Parameter Group
+  RedisParameterGroup:
+    Type: AWS::ElastiCache::ParameterGroup
+    Properties:
+      CacheParameterGroupFamily: redis7
+      CacheParameterGroupName: !Sub '${Prefix}-${Env}-redis7-parameter-group'
+      Description: !Sub '${Prefix}-${Env}-redis7-parameter-group'
+
+  # Security Group for ALB
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupName: !Sub '${Prefix}-${Env}-alb-sg'
+      GroupDescription: !Sub '${Prefix}-${Env}-alb-sg'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: '0.0.0.0/0'
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: '0.0.0.0/0'
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-alb-sg'
+
+  # Security Group for Container
+  ContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupName: !Sub '${Prefix}-${Env}-container-sg'
+      GroupDescription: !Sub '${Prefix}-${Env}-container-sg'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-container-sg'
+
+  # Security Group for Bastion Host
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupName: !Sub '${Prefix}-${Env}-bastion-sg'
+      GroupDescription: !Sub '${Prefix}-${Env}-bastion-sg'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: '0.0.0.0/0'
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-bastion-sg'
+
+  # Security Group for RDS PostgreSQL
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupName: !Sub '${Prefix}-${Env}-rds-sg'
+      GroupDescription: !Sub '${Prefix}-${Env}-rds-sg'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '5432'
+          ToPort: '5432'
+          SourceSecurityGroupId: !Ref ContainerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '5432'
+          ToPort: '5432'
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-rds-sg'
+
+  # Security Group for ElastiCache Redis
+  ElastiCacheSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupName: !Sub '${Prefix}-${Env}-cache-sg'
+      GroupDescription: !Sub '${Prefix}-${Env}-cache-sg'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '6379'
+          ToPort: '6379'
+          SourceSecurityGroupId: !Ref ContainerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '6379'
+          ToPort: '6379'
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-cache-sg'
+
+  # EC2 Instance for Bastion Host
+  BastionHostInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.medium
+      KeyName: !Sub '${KeyPair}'
+      ImageId: !FindInMap [AMIMap, !Ref "AWS::Region", Ubuntu]
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !Ref PublicSubnet1A
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: 50
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Update the package repository and install Redis CLI and PostgreSQL client
+          sudo apt-get update -y
+          sudo apt-get install -y redis-tools postgresql-client
+          # Optionally, you can verify the installations
+          redis-cli --version
+          psql --version
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-bastion'
+
+  # RDS PostgreSQL Instance
+  RDSPostgreSQLInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub '${Prefix}-${Env}-postgres-db'
+      DBInstanceClass: db.t3.small
+      Engine: postgres
+      EngineVersion: 16
+      DBName: !Sub '${Prefix}${Env}db'
+      MasterUsername: !Join ['', ['{{resolve:secretsmanager:', !Ref RDSSecret, ':SecretString:username}}' ]]
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref RDSSecret, ':SecretString:password}}' ]]
+      DBSubnetGroupName: !Ref RDSSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      AllocatedStorage: 50
+      StorageType: gp3
+      MultiAZ: false
+      PubliclyAccessible: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-postgres-db'
+
+  # Secrets Manager - Store RDS Credentials
+  RDSSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Prefix}-${Env}-rds-credentials'
+      Description: !Sub 'RDS PostgreSQL credentials for ${Prefix}-${Env}'
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "postgres","dbname":"${Prefix}${Env}db"}}'
+        GenerateStringKey: 'password'
+        PasswordLength: 16
+        ExcludePunctuation: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-rds-credentials'
+
+  # ElastiCache Redis Cluster
+  RedisCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      ClusterName: !Sub '${Prefix}-${Env}-redis-cluster'
+      Engine: redis
+      CacheNodeType: cache.t3.micro
+      NumCacheNodes: 1
+      AZMode: single-az
+      CacheSubnetGroupName: !Ref ElastiCacheSubnetGroup
+      CacheParameterGroupName: !Ref RedisParameterGroup
+      VpcSecurityGroupIds:
+        - !Ref ElastiCacheSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-redis-cluster'
+
+  # Target Group Blue
+  ELBTargetGroupBlue:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: !Sub '${Prefix}-${Env}-alb-tg-blue'
+      HealthCheckIntervalSeconds: 6
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VPC
+      TargetType: ip
+
+  # Target Group Green
+  ELBTargetGroupGreen:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: !Sub '${Prefix}-${Env}-alb-tg-green'
+      HealthCheckIntervalSeconds: 6
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VPC
+      TargetType: ip
+
+  # Application Load Balancer
+  ElasticLoadBalancer:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Name: !Sub '${Prefix}-${Env}-alb'
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1A
+        - !Ref PublicSubnet1B
+      SecurityGroups: 
+        - !Ref ALBSecurityGroup
+
+  # HTTPS Listener
+  HTTPSElbListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ELBTargetGroupBlue
+      LoadBalancerArn: !Ref ElasticLoadBalancer
+      Port: '443'
+      Protocol: HTTP
+
+  # HTTP Listener
+  HTTPElbListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Host: '#{host}'
+            Path: '/#{path}'
+            Port: '443'
+            Protocol: HTTPS
+            StatusCode: HTTP_302
+      LoadBalancerArn: !Ref ElasticLoadBalancer
+      Port: '80'
+      Protocol: HTTP
+
+  # ECR Container Image
+  ECRepository:
+    Type: AWS::ECR::Repository
+    Properties: 
+      RepositoryName: !Sub '${Prefix}-${Env}-backend-service'
+      ImageScanningConfiguration: 
+        ScanOnPush: true
+
+  # ECS Cluster (Fargate)
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${Prefix}-${Env}-ecs-cluster'
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 1
+
+# Mappings for AMI ID based on Region
+Mappings:
+  AMIMap:
+    ap-southeast-1:
+      Ubuntu: ami-045f9c1ecb56d9532
+    us-east-1:
+      Ubuntu: ami-04552bb4f4dd38925
