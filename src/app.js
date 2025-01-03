@@ -1,18 +1,15 @@
-import * as dotenv from 'dotenv';
-dotenv.config(); // Load environment variables from .env file
+const dotenv = require('dotenv');
+dotenv.config();
 
-import express from 'express';
-import bodyParser from 'body-parser';
-const { json } = bodyParser; 
-import pg from 'pg';
-const { Pool } = pg;
-import Redis from 'ioredis';
-import { hash, compare } from 'bcrypt';
-import validator from 'validator';
-const { isEmail } = validator;
-import otpGenerator from 'otp-generator';
-import jwt from 'jsonwebtoken';
-import session from 'express-session';
+const express = require('express');
+const bodyParser = require('body-parser');
+const { json } = bodyParser;
+const { Pool } = require('pg');
+const Redis = require('ioredis');
+const { hash, compare } = require('bcrypt');
+const { isEmail } = require('validator');
+const otpGenerator = require('otp-generator');
+const session = require('express-session');
 
 const app = express();
 const port = 3000;
@@ -27,7 +24,7 @@ const pool = new Pool({
     ssl: false
 });
 
-// --- Redis configuration (using ioredis) ---
+// Redis configuration
 const redisClient = new Redis({ 
     host: process.env.REDIS_HOST,
     port: 6379,
@@ -39,9 +36,7 @@ redisClient.on('error', (err) => console.error('Redis Client Error', err));
 // Middleware
 app.use(json());
 
-// --- Helper Functions ---
-
-// Function to generate OTP
+// Helper function to generate OTP
 function generateOtp() {
     return otpGenerator.generate(6, {
         upperCaseAlphabets: false,
@@ -49,14 +44,7 @@ function generateOtp() {
     });
 }
 
-// Function to generate JWT 
-function generateJwt(userId) {
-    const secretKey = process.env.JWT_SECRET || 'your_jwt_secret';
-    const token = jwt.sign({ userId }, secretKey, { expiresIn: '1h' }); 
-    return token;
-}
-
-// --- Session Middleware ---
+// Session middleware using Redis store
 app.use(
     session({
         secret: process.env.SESSION_SECRET || 'your-session-secret',
@@ -76,11 +64,7 @@ app.use(
             async get(key, callback) {
                 try {
                     const value = await this.redisClient.get(key);
-                    if (value) {
-                        callback(null, JSON.parse(value));
-                    } else {
-                        callback(null, null);
-                    }
+                    callback(null, value ? JSON.parse(value) : null);
                 } catch (err) {
                     callback(err);
                 }
@@ -107,14 +91,13 @@ app.use(
     })
 );
 
-// --- API Routes ---
+// API Routes
 
 // /register route
 app.post('/register', async (req, res) => {
     const { email, username, password } = req.body;
 
     try {
-        // 1. Validate inputs
         if (!email || !username || !password) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
@@ -122,11 +105,9 @@ app.post('/register', async (req, res) => {
             return res.status(400).json({ error: 'Invalid email format' });
         }
 
-        // 2. Hash the password
         const saltRounds = 10;
         const hashedPassword = await hash(password, saltRounds);
 
-        // 3. Save user data to PostgreSQL
         const result = await pool.query(
             'INSERT INTO users (email, username, password) VALUES ($1, $2, $3) RETURNING *',
             [email, username, hashedPassword]
@@ -135,7 +116,7 @@ app.post('/register', async (req, res) => {
         res.status(201).json({ message: 'Account created successfully' });
     } catch (error) {
         console.error(error);
-        if (error.code === '23505') { // Unique violation
+        if (error.code === '23505') {
             return res.status(400).json({ error: 'Email or username already exists' });
         }
         res.status(500).json({ error: 'Failed to create account' });
@@ -147,7 +128,6 @@ app.post('/login', async (req, res) => {
     const { email, password } = req.body;
 
     try {
-        // 1. Verify email and password
         const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
         if (result.rows.length === 0) {
             return res.status(401).json({ error: 'Invalid credentials' });
@@ -158,28 +138,26 @@ app.post('/login', async (req, res) => {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        // 2. Generate OTP code
+        // Generate OTP code
         const otp = generateOtp();
 
-        // 3. Store OTP in Redis with expiration
-        await redisClient.set(email, otp, 'EX', 300);
+        // Store OTP in Redis, expires in 1 minute
+        await redisClient.set(email, otp, 'EX', 60);
 
-        // *** Set session data ***
-        req.session.userId = user.id; 
+        // Save user data in session
+        req.session.userId = user.id;
         req.session.otpVerified = false;
 
-        // *** Save the session before sending the response ***
         req.session.save((err) => {
             if (err) {
                 console.error('Error saving session:', err);
                 return res.status(500).json({ error: 'Login failed' });
             }
 
-            // *** Send the session ID as a cookie in the response ***
             res.cookie('connect.sid', req.sessionID, {
                 httpOnly: true,
-                secure: false, // Set to true if using HTTPS
-                maxAge: 300000, // 5 minutes
+                secure: false,  
+                maxAge: 300000,
             });
 
             res.json({ otp, message: 'OTP code generated. Please verify.' });
@@ -195,53 +173,47 @@ app.post('/verify', async (req, res) => {
     const { otp } = req.body;
 
     try {
-        // 1. Get user ID from session
         if (!req.session.userId) {
             return res.status(401).json({ error: 'Not logged in' });
         }
         const userId = req.session.userId;
 
-        // 2. Get user's email from the database
         const result = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
         if (result.rows.length === 0) {
             return res.status(401).json({ error: 'User not found' });
         }
         const email = result.rows[0].email;
 
-        // 3. Get OTP from Redis
+        // Get OTP from Redis
         const storedOtp = await redisClient.get(email);
 
-        // 4. Validate OTP
+        // Validate OTP
         if (!storedOtp || storedOtp !== otp) {
             return res.status(401).json({ error: 'Invalid or expired OTP code' });
         }
 
-        // 5. Mark OTP as verified in the session
+        // Mark OTP as verified in session
         req.session.otpVerified = true;
 
-        // 6. Generate JWT
-        const token = generateJwt(userId);
-
-        res.json({ message: 'Verification successful', token });
+        res.json({ message: 'Verification successful' });
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Verification failed' });
     }
 });
 
+// /buy-ticket route
 app.post('/buy-ticket', async (req, res) => {
     const { expiredDate } = req.body;
-    const image = `https://source.unsplash.com/random/100x100/?ticket`; // Random image URL
-    const qr_code = 'line.png'; // Placeholder QR code
+    const image = `https://source.unsplash.com/random/100x100/?ticket`;
+    const qr_code = 'line.png';
 
     try {
-        // 1. Get user ID from session
         if (!req.session.userId) {
             return res.status(401).json({ error: 'Not logged in' });
         }
         const userId = req.session.userId;
 
-        // 2. Validate expiredDate
         const parsedExpiredDate = new Date(expiredDate);
         if (isNaN(parsedExpiredDate)) {
             return res.status(400).json({ error: 'Invalid expiredDate format' });
@@ -250,13 +222,11 @@ app.post('/buy-ticket', async (req, res) => {
             return res.status(400).json({ error: 'expiredDate must be in the future' });
         }
 
-        // 3. Create a new ticket in the database
         const ticketResult = await pool.query(
             'INSERT INTO tickets (user_id, expiredDate, image, qr_code) VALUES ($1, $2, $3, $4) RETURNING *',
             [userId, expiredDate, image, qr_code]
         );
 
-        // 4. Send a success response
         res.status(201).json({
             message: 'Ticket purchased successfully',
             ticket: ticketResult.rows[0]
@@ -266,8 +236,6 @@ app.post('/buy-ticket', async (req, res) => {
         res.status(500).json({ error: 'Failed to purchase ticket' });
     }
 });
-
-// --- End of API Routes ---
 
 // Start the server
 app.listen(port, '0.0.0.0', () => {
