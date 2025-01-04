@@ -248,46 +248,6 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-// Buy-ticket route
-app.post('/buy-ticket', async (req, res) => {
-    const { expiredDate } = req.body;
-    const image = `https://source.unsplash.com/random/100x100/?ticket`;
-    const qr_code = 'line.png';
-
-    try {
-        if (!req.session.userId) {
-            return res.status(401).json({ error: 'Not logged in' });
-        }
-
-        // Check user subscription using userId in session
-        const isSubscribed = await checkUserSubscription(req.session.userId);
-        if (isSubscribed != 'Execution started successfully') {
-            return res.status(403).json({ error: 'User is not subscribed to notifications' });
-        }
-
-        const parsedExpiredDate = new Date(expiredDate);
-        if (isNaN(parsedExpiredDate)) {
-            return res.status(400).json({ error: 'Invalid expiredDate format' });
-        }
-        if (parsedExpiredDate <= new Date()) {
-            return res.status(400).json({ error: 'expiredDate must be in the future' });
-        }
-
-        const ticketResult = await pool.query(
-            'INSERT INTO tickets (user_id, expiredDate, image, qr_code) VALUES ($1, $2, $3, $4) RETURNING *',
-            [req.session.userId, expiredDate, image, qr_code]
-        );
-
-        res.status(201).json({
-            message: 'Ticket purchased successfully',
-            ticket: ticketResult.rows[0]
-        });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Failed to purchase ticket' });
-    }
-});
-
 // Start the server
 app.listen(port, '0.0.0.0', () => {
     console.log(`Server listening on port ${port}`);

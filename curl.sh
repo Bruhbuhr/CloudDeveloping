@@ -9,7 +9,7 @@ curl -X POST http://localhost:3000/register \
 curl -X POST http://localhost:3000/login \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "kiaitosantori@gmail.com",
+    "email": "example@gmail.com",
     "password": "securepassword"
   }'
 
@@ -17,5 +17,5 @@ curl -X POST http://localhost:3000/verify \
   -H "Content-Type: application/json" \
   -d '{
     "email": "example@gmail.com",
-    "otp": "xxxx"
+    "otp": "xxxxxx"
   }'

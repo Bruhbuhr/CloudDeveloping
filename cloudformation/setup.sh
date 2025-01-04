@@ -1,9 +1,9 @@
-AWS_PROFILE=default
+AWS_PROFILE=renovalab
 PREFIX=asm3
-ENV=
+ENV=test
 KEYPAIR=
-IAM_ROLE=LabRole
-IAM_INSTANCE_PROFILE=LabInstanceProfile
+IAM_ROLE=asm-LabRole
+IAM_INSTANCE_PROFILE=asm-LabInstanceProfile
 
 # Compute resources
 aws cloudformation create-stack \

@@ -162,18 +162,14 @@ Resources:
           
           def lambda_handler(event, context):
               try:
-                  # Get email from the parsed body
                   email = event['email']
           
-                  # Retrieve the SNS topic ARN from environment variables
                   topic_arn = os.environ['SNS_TOPIC_ARN']
           
-                  # List subscriptions to check if the email is already subscribed
                   response = sns.list_subscriptions_by_topic(
                       TopicArn=topic_arn
                   )
           
-                  # Check if the email is in the list of subscriptions
                   for subscription in response['Subscriptions']:
                       if subscription['Endpoint'] == email:
                           return {
@@ -181,7 +177,6 @@ Resources:
                               "body": {"subscribed": True}
                           }
                   
-                  # If no match is found, the user is not subscribed
                   return {
                       "statusCode": 200,
                       "body": {"subscribed": False}
@@ -275,6 +270,117 @@ Resources:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !GetAtt OTPLambdaFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
+
+  # New S3 Bucket for Storing Event Images
+  EventImageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Prefix}-${Env}-event-images"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        IgnorePublicAcls: false
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - "*"
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+              - HEAD
+            AllowedHeaders:
+              - "*"
+            MaxAge: 3000
+      Tags:
+        - Key: Name
+          Value: !Sub "${Prefix}-${Env}-event-images"
+
+  # Bucket Policy
+  EventImageBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref EventImageBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowPublicReadAccess
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::${Prefix}-${Env}-event-images/*"
+          - Sid: AllowLambdaToUpload
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
+            Action: "s3:PutObject"
+            Resource: !Sub "arn:aws:s3:::${Prefix}-${Env}-event-images/*"
+
+  # Lambda function to handle image uploads
+  ImageUploadLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Prefix}-${Env}-upload-event-image"
+      Runtime: python3.9
+      Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import base64
+          import os
+          
+          s3 = boto3.client('s3')
+          
+          def lambda_handler(event, context):
+              try:
+                  body = json.loads(event['body'])
+                  image_data = body.get('image')
+                  event_id = body.get('event_id')
+                  
+                  if not image_data or not event_id:
+                      return {
+                          "statusCode": 400,
+                          "body": json.dumps({"error": "Missing image data or event ID"})
+                      }
+                  
+                  # Decode the base64 image data
+                  image_bytes = base64.b64decode(image_data)
+                  file_name = f"{event_id}/image.png"
+                  
+                  # Upload the image to S3
+                  s3.put_object(
+                      Bucket=os.environ['EVENT_IMAGE_BUCKET'],
+                      Key=file_name,
+                      Body=image_bytes,
+                      ContentType='image/png'
+                  )
+                  
+                  return {
+                      "statusCode": 200,
+                      "body": json.dumps({"message": "Image uploaded successfully", "image_url": f"s3://{os.environ['EVENT_IMAGE_BUCKET']}/{file_name}"})
+                  }
+              except Exception as e:
+                  return {
+                      "statusCode": 500,
+                      "body": json.dumps({"error": str(e)})
+                  }
+      Environment:
+        Variables:
+          EVENT_IMAGE_BUCKET: !Ref EventImageBucket
+      Timeout: 10
+
+  # Grant permission for API Gateway to invoke the Lambda function
+  LambdaImageUploadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ImageUploadLambdaFunction.Arn
       Action: "lambda:InvokeFunction"
       Principal: "apigateway.amazonaws.com"
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
@@ -412,6 +518,65 @@ Resources:
     Properties:
       RestApiId: !Ref ApiGatewayRestApi
       ResourceId: !Ref OTPResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/create-event' resource path
+  CreateEventResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'create-event'
+
+  # '/create-event' POST method
+  CreateEventMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref CreateEventResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ImageUploadLambdaFunction.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/create-event' OPTIONS method for CORS preflight
+  CreateEventMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref CreateEventResource
       HttpMethod: OPTIONS
       AuthorizationType: NONE
       Integration:
