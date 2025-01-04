@@ -12,3 +12,10 @@ curl -X POST http://localhost:3000/login \
     "email": "example@gmail.com",
     "password": "securepassword"
   }'
+
+curl -X POST http://localhost:3000/verify \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "kiaitosantori@gmail.com",
+    "otp": "ogvwxl"
+  }'

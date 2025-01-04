@@ -118,6 +118,71 @@ Resources:
           }
         }
 
+  # Lambda function to check if a user is subscribed to SNS topic
+  CheckSubscriptionLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Prefix}-${Env}-check-subscription"
+      Runtime: python3.9
+      Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          
+          sns = boto3.client('sns')
+          
+          def lambda_handler(event, context):
+              try:
+                  # Parse the JSON body of the event
+                  body = json.loads(event['body'])
+                  
+                  # Get email from the parsed body
+                  email = body.get('email')
+          
+                  # Retrieve the SNS topic ARN from environment variables
+                  topic_arn = os.environ['SNS_TOPIC_ARN']
+          
+                  # List subscriptions to check if the email is already subscribed
+                  response = sns.list_subscriptions_by_topic(
+                      TopicArn=topic_arn
+                  )
+          
+                  # Check if the email is in the list of subscriptions
+                  for subscription in response['Subscriptions']:
+                      if subscription['Endpoint'] == email:
+                          return {
+                              "statusCode": 200,
+                              "body": json.dumps({"subscribed": True})
+                          }
+                  
+                  # If no match is found, the user is not subscribed
+                  return {
+                      "statusCode": 200,
+                      "body": json.dumps({"subscribed": False})
+                  }
+          
+              except Exception as e:
+                  return {
+                      "statusCode": 500,
+                      "body": json.dumps({"error": str(e)})
+                  }
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref SNSTopic
+      Timeout: 10
+
+  # Grant permission for API Gateway to invoke the Lambda function
+  LambdaSNSTopicCheckingPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CheckSubscriptionLambdaFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
+
   # Lambda function to send OTP
   OTPLambdaFunction:
     Type: AWS::Lambda::Function
@@ -287,15 +352,74 @@ Resources:
             method.response.header.Access-Control-Allow-Methods: true
             method.response.header.Access-Control-Allow-Origin: true
 
-  # '/otp' resource path
+  # '/check-subscription' resource path
+  CheckSubscriptionResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'check-subscription'
+  
+  # '/check-subscription' POST method
+  CheckSubscriptionMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref CheckSubscriptionResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CheckSubscriptionLambdaFunction.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+  
+  # '/check-subscription' OPTIONS method for CORS preflight
+  CheckSubscriptionMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref CheckSubscriptionResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/send-otp' resource path
   OTPResource:
     Type: AWS::ApiGateway::Resource
     Properties:
       RestApiId: !Ref ApiGatewayRestApi
       ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
-      PathPart: 'otp'
+      PathPart: 'send-otp'
 
-  # '/otp' POST method
+  # '/send-otp' POST method
   OTPMethodPost:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -352,6 +476,8 @@ Resources:
     DependsOn:
       - SubscribeMethodPost
       - SubscribeMethodOptions
+      - CheckSubscriptionMethodPost
+      - CheckSubscriptionMethodOptions
       - OTPMethodPost
       - OTPMethodOptions
     Properties:

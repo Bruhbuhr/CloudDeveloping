@@ -92,6 +92,25 @@ app.use(
     })
 );
 
+// Check user subscription before proceeding
+async function checkUserSubscription(email) {
+    try {
+        const apiUrl = `${process.env.API_GATEWAY_URL}/check-subscription`;
+        const response = await axios.post(apiUrl, {
+                email: email,
+            }, {
+            headers: {
+                'x-api-key': process.env.API_KEY,
+                'Content-Type': 'application/json',
+            },
+        });
+        return response.data.subscribed;
+    } catch (error) {
+        console.error('Error checking subscription:', error);
+        throw new Error('Failed to check subscription');
+    }
+}
+
 // API Routes
 
 // /register route
@@ -138,6 +157,12 @@ app.post('/login', async (req, res) => {
     const { email, password } = req.body;
 
     try {
+        // Check subscription before proceeding
+        const isSubscribed = await checkUserSubscription(email);
+        if (!isSubscribed) {
+            return res.status(403).json({ error: 'User is not subscribed to notifications' });
+        }
+
         const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
         if (result.rows.length === 0) {
             return res.status(401).json({ error: 'Invalid credentials' });
@@ -154,9 +179,9 @@ app.post('/login', async (req, res) => {
         // Store OTP in Redis, expires in 1 minute
         await redisClient.set(email, otp, 'EX', 60);
 
-        // Call the '/otp' API Gateway endpoint to send the OTP to the user's email
+        // Call the '/send-otp' API Gateway endpoint to send the OTP to the user's email
         try {
-            const apiUrl = `${process.env.API_GATEWAY_URL}/otp`;
+            const apiUrl = `${process.env.API_GATEWAY_URL}/send-otp`;
             const response = await axios.post(apiUrl, {
                 email: email,
                 otp: otp
@@ -204,9 +229,15 @@ app.post('/login', async (req, res) => {
 
 // /verify route
 app.post('/verify', async (req, res) => {
-    const { otp } = req.body;
+    const { otp, email } = req.body;
 
     try {
+        // Check subscription before proceeding
+        const isSubscribed = await checkUserSubscription(email);
+        if (!isSubscribed) {
+            return res.status(403).json({ error: 'User is not subscribed to notifications' });
+        }
+
         if (!req.session.userId) {
             return res.status(401).json({ error: 'Not logged in' });
         }
@@ -216,10 +247,10 @@ app.post('/verify', async (req, res) => {
         if (result.rows.length === 0) {
             return res.status(401).json({ error: 'User not found' });
         }
-        const email = result.rows[0].email;
+        const userEmail = result.rows[0].email;
 
         // Get OTP from Redis
-        const storedOtp = await redisClient.get(email);
+        const storedOtp = await redisClient.get(userEmail);
 
         // Validate OTP
         if (!storedOtp || storedOtp !== otp) {
@@ -238,11 +269,17 @@ app.post('/verify', async (req, res) => {
 
 // /buy-ticket route
 app.post('/buy-ticket', async (req, res) => {
-    const { expiredDate } = req.body;
+    const { expiredDate, email } = req.body;
     const image = `https://source.unsplash.com/random/100x100/?ticket`;
     const qr_code = 'line.png';
 
     try {
+        // Check subscription before proceeding
+        const isSubscribed = await checkUserSubscription(email);
+        if (!isSubscribed) {
+            return res.status(403).json({ error: 'User is not subscribed to notifications' });
+        }
+
         if (!req.session.userId) {
             return res.status(401).json({ error: 'Not logged in' });
         }
