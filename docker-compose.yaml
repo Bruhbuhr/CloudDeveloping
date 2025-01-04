@@ -15,18 +15,18 @@ services:
     ports:
       - "6379:6379"
 
-  app:
-    build:
-      context: ./src
-      dockerfile: Dockerfile
-    environment:
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-      DB_DATABASE: ${DB_DATABASE}
-      DB_HOST: postgres
-      REDIS_HOST: redis
-    ports:
-      - "3000:3000"
-    depends_on:
-      - postgres
-      - redis
+  # app:
+  #   build:
+  #     context: ./src
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     DB_USER: ${DB_USER}
+  #     DB_PASSWORD: ${DB_PASSWORD}
+  #     DB_DATABASE: ${DB_DATABASE}
+  #     DB_HOST: postgres
+  #     REDIS_HOST: redis
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     - postgres
+  #     - redis

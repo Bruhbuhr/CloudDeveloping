@@ -130,15 +130,6 @@ Resources:
       ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
       PathPart: 'subscribe'
 
-  # Step Functions API Gateway Integration
-  ApiRequestValidator:
-    Type: AWS::ApiGateway::RequestValidator
-    Properties:
-      RestApiId: !Ref ApiGatewayRestApi
-      Name: "SubscribeRequestValidator"
-      ValidateRequestParameters: true
-      ValidateRequestBody: false
-
   # '/subscribe' POST method
   SubscribeMethodPost:
     Type: 'AWS::ApiGateway::Method'
@@ -148,7 +139,6 @@ Resources:
       HttpMethod: POST
       ApiKeyRequired: true
       AuthorizationType: NONE
-      RequestValidatorId: !Ref ApiRequestValidator
       RequestParameters:
         method.request.querystring.email: true
       Integration:
@@ -164,6 +154,8 @@ Resources:
             }
         IntegrationResponses:
           - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
             ResponseTemplates:
               application/json: |
                 {
@@ -171,6 +163,8 @@ Resources:
                   "executionArn": "$input.path('$.executionArn')"
                 }
           - StatusCode: 400
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
             ResponseTemplates:
               application/json: |
                 {
@@ -180,12 +174,45 @@ Resources:
             SelectionPattern: "Invalid.*"
       MethodResponses:
         - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
         - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+  
+  # '/subscribe' OPTIONS method for CORS preflight
+  SubscribeMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref SubscribeResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
 
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
     DependsOn: 
       - SubscribeMethodPost
+      - SubscribeMethodOptions
     Properties: 
       RestApiId: !Ref ApiGatewayRestApi
       StageName: !Ref Env

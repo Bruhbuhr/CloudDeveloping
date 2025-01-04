@@ -10,6 +10,7 @@ const { hash, compare } = require('bcrypt');
 const { isEmail } = require('validator');
 const otpGenerator = require('otp-generator');
 const session = require('express-session');
+const axios = require('axios');
 
 const app = express();
 const port = 3000;
@@ -108,12 +109,21 @@ app.post('/register', async (req, res) => {
         const saltRounds = 10;
         const hashedPassword = await hash(password, saltRounds);
 
-        const result = await pool.query(
+        await pool.query(
             'INSERT INTO users (email, username, password) VALUES ($1, $2, $3) RETURNING *',
             [email, username, hashedPassword]
         );
+        
+        // Call API Gateway to subscribe user to SNS topic
+        const apiUrl = `${process.env.API_GATEWAY_URL}/subscribe?email=${encodeURIComponent(email)}`;
+        await axios.post(apiUrl, {}, {
+            headers: {
+                'x-api-key': process.env.API_KEY,
+                'Content-Type': 'application/json',
+            },
+        });
 
-        res.status(201).json({ message: 'Account created successfully' });
+        res.status(201).json({ message: 'Account created successfully, subscription email sent.' });
     } catch (error) {
         console.error(error);
         if (error.code === '23505') {
