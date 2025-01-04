@@ -16,6 +16,6 @@ curl -X POST http://localhost:3000/login \
 curl -X POST http://localhost:3000/verify \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "kiaitosantori@gmail.com",
-    "otp": "ogvwxl"
+    "email": "example@gmail.com",
+    "otp": "xxxx"
   }'
