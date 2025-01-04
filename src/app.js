@@ -92,16 +92,24 @@ app.use(
 );
 
 // Check user subscription before proceeding
-async function checkUserSubscription(email) {
+async function checkUserSubscription(userId) {
     try {
-        const apiUrl = `${process.env.API_GATEWAY_URL}/check-subscription`;
-        const response = await axios.post(apiUrl, { email }, {
+        // Get user email from database using userId
+        const result = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+        if (result.rows.length === 0) {
+            throw new Error('User not found');
+        }
+        const email = result.rows[0].email;
+
+        // Now check subscription using email
+        const apiUrl = `${process.env.API_GATEWAY_URL}/subscribe?email=${encodeURIComponent(email)}`;
+        const response = await axios.post(apiUrl, {}, {
             headers: {
                 'x-api-key': process.env.API_KEY,
                 'Content-Type': 'application/json',
             },
         });
-        return response.data.subscribed;
+        return response.data.message;
     } catch (error) {
         console.error('Error checking subscription:', error);
         throw new Error('Failed to check subscription');
@@ -151,8 +159,15 @@ app.post('/login', async (req, res) => {
     const { email, password } = req.body;
 
     try {
-        const isSubscribed = await checkUserSubscription(email);
-        if (!isSubscribed) {
+        // Now check subscription using email
+        const apiUrl = `${process.env.API_GATEWAY_URL}/subscribe?email=${encodeURIComponent(email)}`;
+        const response = await axios.post(apiUrl, {}, {
+            headers: {
+                'x-api-key': process.env.API_KEY,
+                'Content-Type': 'application/json',
+            },
+        });
+        if (response.data.message != 'Execution started successfully') {
             return res.status(403).json({ error: 'User is not subscribed to notifications' });
         }
 
@@ -207,19 +222,20 @@ app.post('/login', async (req, res) => {
 
 // Verify route
 app.post('/verify', async (req, res) => {
-    const { otp, email } = req.body;
+    const { otp } = req.body;
 
     try {
-        const isSubscribed = await checkUserSubscription(email);
-        if (!isSubscribed) {
-            return res.status(403).json({ error: 'User is not subscribed to notifications' });
-        }
-
         if (!req.session.userId) {
             return res.status(401).json({ error: 'Not logged in' });
         }
 
-        const storedOtp = await redisClient.get(email);
+        // Check user subscription using userId in session
+        const isSubscribed = await checkUserSubscription(req.session.userId);
+        if (isSubscribed != 'Execution started successfully') {
+            return res.status(403).json({ error: 'User is not subscribed to notifications' });
+        }
+
+        const storedOtp = await redisClient.get(req.session.userId.toString());
         if (!storedOtp || storedOtp !== otp) {
             return res.status(401).json({ error: 'Invalid or expired OTP code' });
         }
@@ -234,18 +250,19 @@ app.post('/verify', async (req, res) => {
 
 // Buy-ticket route
 app.post('/buy-ticket', async (req, res) => {
-    const { expiredDate, email } = req.body;
+    const { expiredDate } = req.body;
     const image = `https://source.unsplash.com/random/100x100/?ticket`;
     const qr_code = 'line.png';
 
     try {
-        const isSubscribed = await checkUserSubscription(email);
-        if (!isSubscribed) {
-            return res.status(403).json({ error: 'User is not subscribed to notifications' });
-        }
-
         if (!req.session.userId) {
             return res.status(401).json({ error: 'Not logged in' });
+        }
+
+        // Check user subscription using userId in session
+        const isSubscribed = await checkUserSubscription(req.session.userId);
+        if (isSubscribed != 'Execution started successfully') {
+            return res.status(403).json({ error: 'User is not subscribed to notifications' });
         }
 
         const parsedExpiredDate = new Date(expiredDate);

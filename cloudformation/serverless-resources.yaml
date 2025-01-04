@@ -95,10 +95,36 @@ Resources:
                 {
                   "Variable": "$.email",
                   "StringMatches": "*@*.*",
-                  "Next": "SendSubscriptionEmail"
+                  "Next": "CheckSubscriptionStatus"
                 }
               ],
               "Default": "InvalidInput"
+            },
+            "CheckSubscriptionStatus": {
+              "Type": "Task",
+              "Resource": "${CheckSubscriptionLambdaFunction.Arn}",
+              "ResultPath": "$.subscriptionStatus",
+              "Next": "SubscriptionDecision"
+            },
+            "SubscriptionDecision": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.subscriptionStatus.body.subscribed",
+                  "BooleanEquals": true,
+                  "Next": "AlreadySubscribed"
+                },
+                {
+                  "Variable": "$.subscriptionStatus.body.subscribed",
+                  "BooleanEquals": false,
+                  "Next": "SendSubscriptionEmail"
+                }
+              ]
+            },
+            "AlreadySubscribed": {
+              "Type": "Pass",
+              "Result": "Already subscribed!",
+              "End": true
             },
             "SendSubscriptionEmail": {
               "Type": "Task",
@@ -136,11 +162,8 @@ Resources:
           
           def lambda_handler(event, context):
               try:
-                  # Parse the JSON body of the event
-                  body = json.loads(event['body'])
-                  
                   # Get email from the parsed body
-                  email = body.get('email')
+                  email = event['email']
           
                   # Retrieve the SNS topic ARN from environment variables
                   topic_arn = os.environ['SNS_TOPIC_ARN']
@@ -155,13 +178,13 @@ Resources:
                       if subscription['Endpoint'] == email:
                           return {
                               "statusCode": 200,
-                              "body": json.dumps({"subscribed": True})
+                              "body": {"subscribed": True}
                           }
                   
                   # If no match is found, the user is not subscribed
                   return {
                       "statusCode": 200,
-                      "body": json.dumps({"subscribed": False})
+                      "body": {"subscribed": False}
                   }
           
               except Exception as e:
@@ -352,65 +375,6 @@ Resources:
             method.response.header.Access-Control-Allow-Methods: true
             method.response.header.Access-Control-Allow-Origin: true
 
-  # '/check-subscription' resource path
-  CheckSubscriptionResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref ApiGatewayRestApi
-      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
-      PathPart: 'check-subscription'
-  
-  # '/check-subscription' POST method
-  CheckSubscriptionMethodPost:
-    Type: 'AWS::ApiGateway::Method'
-    Properties:
-      RestApiId: !Ref ApiGatewayRestApi
-      ResourceId: !Ref CheckSubscriptionResource
-      HttpMethod: POST
-      AuthorizationType: NONE
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CheckSubscriptionLambdaFunction.Arn}/invocations"
-      MethodResponses:
-        - StatusCode: 200
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
-        - StatusCode: 400
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
-        - StatusCode: 500
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
-  
-  # '/check-subscription' OPTIONS method for CORS preflight
-  CheckSubscriptionMethodOptions:
-    Type: 'AWS::ApiGateway::Method'
-    Properties:
-      RestApiId: !Ref ApiGatewayRestApi
-      ResourceId: !Ref CheckSubscriptionResource
-      HttpMethod: OPTIONS
-      AuthorizationType: NONE
-      Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: |
-            {
-              "statusCode": 200
-            }
-        IntegrationResponses:
-          - StatusCode: 200
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
-              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-      MethodResponses:
-        - StatusCode: 200
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Headers: true
-            method.response.header.Access-Control-Allow-Methods: true
-            method.response.header.Access-Control-Allow-Origin: true
-
   # '/send-otp' resource path
   OTPResource:
     Type: AWS::ApiGateway::Resource
@@ -470,14 +434,12 @@ Resources:
             method.response.header.Access-Control-Allow-Methods: true
             method.response.header.Access-Control-Allow-Origin: true
 
-  # Update Deployment to include '/otp'
+  # Update Deployment
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - SubscribeMethodPost
       - SubscribeMethodOptions
-      - CheckSubscriptionMethodPost
-      - CheckSubscriptionMethodOptions
       - OTPMethodPost
       - OTPMethodOptions
     Properties:
