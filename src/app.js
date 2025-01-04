@@ -10,6 +10,7 @@ const { hash, compare } = require('bcrypt');
 const { isEmail } = require('validator');
 const session = require('express-session');
 const axios = require('axios');
+const cors = require('cors');
 
 const app = express();
 const port = 3000;
@@ -34,6 +35,7 @@ redisClient.on('connect', () => console.log('Connected to Redis'));
 redisClient.on('error', (err) => console.error('Redis Client Error', err));
 
 // Middleware
+app.use(cors());
 app.use(json());
 
 // Helper function to generate OTP (6-digit numeric code)
