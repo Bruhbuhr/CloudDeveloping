@@ -27,13 +27,6 @@ aws cloudformation update-stack \
     --parameters ParameterKey=Prefix,ParameterValue=$PREFIX ParameterKey=Env,ParameterValue=test \
     --profile=$AWS_PROFILE
 
-# LabRole replication
-aws cloudformation create-stack \
-    --stack-name $PREFIX-role-stack \
-    --template-body file://role.yaml \
-    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-    --profile=$AWS_PROFILE
-
 # Clean resources
 aws cloudformation delete-stack \
     --stack-name $PREFIX-test-compute-stack \
@@ -41,10 +34,4 @@ aws cloudformation delete-stack \
 
 aws cloudformation delete-stack \
     --stack-name $PREFIX-serverless-test-stack \
-    --profile=$AWS_PROFILE
-
-aws cloudformation create-stack \
-    --stack-name $PREFIX-lab-role \
-    --template-body file://labrole.yaml \
-    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
     --profile=$AWS_PROFILE

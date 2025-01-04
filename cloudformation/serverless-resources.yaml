@@ -55,7 +55,10 @@ Resources:
             {
               "Effect": "Allow",
               "Principal": {
-                "Service": "states.amazonaws.com"
+                "Service": [
+                  "states.amazonaws.com",
+                  "lambda.amazonaws.com"
+                ]
               },
               "Action": [
                 "SNS:GetTopicAttributes",
@@ -111,6 +114,79 @@ Resources:
             }
           }
         }
+
+  # Lambda function to send OTP
+  OTPLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Prefix}-${Env}-send-otp"
+      Runtime: python3.9
+      Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/asm-LabRole"
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+
+          sns = boto3.client('sns')
+
+          def lambda_handler(event, context):
+              try:
+                  body = json.loads(event['body'])
+                  email = body.get('email')
+                  otp = body.get('otp')
+
+                  if not email or not otp:
+                      return {
+                          "statusCode": 400,
+                          "headers": {
+                              "Access-Control-Allow-Origin": "*"
+                          },
+                          "body": json.dumps({"error": "Missing email or otp in request"})
+                      }
+
+                  message = f"Your OTP is: {otp}"
+                  response = sns.publish(
+                      TopicArn=os.environ['SNS_TOPIC_ARN'],
+                      Message=message,
+                      Subject="Your OTP Code",
+                      MessageAttributes={
+                          'email': {
+                              'DataType': 'String',
+                              'StringValue': email
+                          }
+                      }
+                  )
+
+                  return {
+                      "statusCode": 200,
+                      "headers": {
+                          "Access-Control-Allow-Origin": "*"
+                      },
+                      "body": json.dumps({"message": "OTP sent successfully", "response": response})
+                  }
+              except Exception as e:
+                  return {
+                      "statusCode": 500,
+                      "headers": {
+                          "Access-Control-Allow-Origin": "*"
+                      },
+                      "body": json.dumps({"error": str(e)})
+                  }
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref SNSTopic
+      Timeout: 10
+
+  # Grant SNS publish permissions to the Lambda function
+  LambdaSNSTopicPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt OTPLambdaFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
 
   # API Gateway and associated resources
   ApiGatewayRestApi:
@@ -208,12 +284,74 @@ Resources:
             method.response.header.Access-Control-Allow-Methods: true
             method.response.header.Access-Control-Allow-Origin: true
 
+  # '/otp' resource path
+  OTPResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'otp'
+
+  # '/otp' POST method
+  OTPMethodPost:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref OTPResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OTPLambdaFunction.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/otp' OPTIONS method for CORS preflight
+  OTPMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref OTPResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # Update Deployment to include '/otp'
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
-    DependsOn: 
+    DependsOn:
       - SubscribeMethodPost
       - SubscribeMethodOptions
-    Properties: 
+      - OTPMethodPost
+      - OTPMethodOptions
+    Properties:
       RestApiId: !Ref ApiGatewayRestApi
       StageName: !Ref Env
 
@@ -230,6 +368,9 @@ Resources:
             "/subscribe/POST": 
               RateLimit: 50.0
               BurstLimit: 100
+            "/otp/POST":
+              RateLimit: 20.0
+              BurstLimit: 50
       Quota:
         Limit: 1000
         Period: MONTH

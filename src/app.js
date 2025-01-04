@@ -154,6 +154,30 @@ app.post('/login', async (req, res) => {
         // Store OTP in Redis, expires in 1 minute
         await redisClient.set(email, otp, 'EX', 60);
 
+        // Call the '/otp' API Gateway endpoint to send the OTP to the user's email
+        try {
+            const apiUrl = `${process.env.API_GATEWAY_URL}/otp`;
+            const response = await axios.post(apiUrl, {
+                email: email,
+                otp: otp
+            }, {
+                headers: {
+                    'x-api-key': process.env.API_KEY,
+                    'Content-Type': 'application/json',
+                },
+            });
+
+            if (response.status === 200) {
+                console.log('OTP sent successfully to the user');
+            } else {
+                console.error('Failed to send OTP');
+                return res.status(500).json({ error: 'Failed to send OTP' });
+            }
+        } catch (error) {
+            console.error('Error calling /otp API Gateway:', error);
+            return res.status(500).json({ error: 'Failed to call OTP API' });
+        }
+
         // Save user data in session
         req.session.userId = user.id;
         req.session.otpVerified = false;
@@ -170,7 +194,7 @@ app.post('/login', async (req, res) => {
                 maxAge: 300000,
             });
 
-            res.json({ otp, message: 'OTP code generated. Please verify.' });
+            res.json({ message: 'OTP sent. Please verify to complete login.' });
         });
     } catch (error) {
         console.error(error);
