@@ -6,6 +6,9 @@ Parameters:
   Env:
     Type: String
     Description: Environment (e.g., dev, prod)
+  Role:
+    Type: String
+    Description: IAM role resources
 
 Resources:
   # Messaging/Notification
@@ -80,7 +83,7 @@ Resources:
     Type: AWS::StepFunctions::StateMachine
     Properties:
       StateMachineName: !Sub "${Prefix}-${Env}-sns-subscription"
-      RoleArn: !Sub "arn:aws:iam::${AWS::AccountId}:role/asm-LabRole"
+      RoleArn: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
       DefinitionString: !Sub |
         {
           "Comment": "State Machine to handle SNS subscription",
@@ -121,7 +124,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${Prefix}-${Env}-send-otp"
       Runtime: python3.9
-      Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/asm-LabRole"
+      Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
       Handler: index.lambda_handler
       Code:
         ZipFile: |
@@ -221,7 +224,7 @@ Resources:
         Type: AWS
         IntegrationHttpMethod: POST
         Uri: !Sub "arn:aws:apigateway:${AWS::Region}:states:action/StartExecution"
-        Credentials: !Sub "arn:aws:iam::${AWS::AccountId}:role/asm-LabRole"
+        Credentials: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
         RequestTemplates:
           application/json: !Sub |
             {
