@@ -41,6 +41,7 @@ function generateOtp() {
     return otpGenerator.generate(6, {
         upperCaseAlphabets: false,
         specialChars: false,
+        lowerCaseAlphabets: false
     });
 }
 
@@ -202,18 +203,20 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-// /buy-ticket route
+//User buy tickets
 app.post('/buy-ticket', async (req, res) => {
     const { expiredDate } = req.body;
-    const image = `https://source.unsplash.com/random/100x100/?ticket`;
-    const qr_code = 'line.png';
+    const image = `https://source.unsplash.com/random/100x100/?ticket`; // Random image URL
+    const qr_code = 'line.png'; // Placeholder QR code
 
     try {
+        // 1. Get user ID from session
         if (!req.session.userId) {
             return res.status(401).json({ error: 'Not logged in' });
         }
         const userId = req.session.userId;
 
+        // 2. Validate expiredDate
         const parsedExpiredDate = new Date(expiredDate);
         if (isNaN(parsedExpiredDate)) {
             return res.status(400).json({ error: 'Invalid expiredDate format' });
@@ -222,11 +225,27 @@ app.post('/buy-ticket', async (req, res) => {
             return res.status(400).json({ error: 'expiredDate must be in the future' });
         }
 
+        // 3. Create a new ticket in the database
         const ticketResult = await pool.query(
             'INSERT INTO tickets (user_id, expiredDate, image, qr_code) VALUES ($1, $2, $3, $4) RETURNING *',
             [userId, expiredDate, image, qr_code]
         );
 
+        const ticket = ticketResult.rows[0];
+
+        // *** 4. Store ticket information in Redis ***
+        const ticketKey = `ticket:${ticket.id}`; // Generate a unique key for the ticket
+        const redisResult = await redisClient.set(ticketKey, JSON.stringify(ticket), 'EX', 60 * 60 * 24); // Expire in 24 hours
+
+        // *** 5. Check if the ticket was stored successfully in Redis ***
+        if (redisResult !== 'OK') {
+            console.error('Failed to store ticket in Redis');
+            // Optionally handle the error (e.g., log, retry, or rollback the ticket creation)
+        } else {
+            console.log('Ticket stored in Redis successfully');
+        }
+
+        // 6. Send a success response
         res.status(201).json({
             message: 'Ticket purchased successfully',
             ticket: ticketResult.rows[0]
@@ -236,6 +255,32 @@ app.post('/buy-ticket', async (req, res) => {
         res.status(500).json({ error: 'Failed to purchase ticket' });
     }
 });
+
+//List user tickets
+app.get('/tickets', async (req, res) => {
+    console.log('Tickets route reached'); // Add this line 
+
+    try {
+        // 1. Get user ID from session
+        if (!req.session.userId) {
+            return res.status(401).json({ error: 'Not logged in' });
+        }
+        const userId = req.session.userId;
+
+        // 2. Fetch tickets from the database
+        const result = await pool.query(
+            'SELECT * FROM tickets WHERE user_id = $1',
+            [userId]
+        );
+
+        // 3. Send the tickets in the response
+        res.json({ tickets: result.rows });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Failed to fetch tickets' });
+    }
+});
+
 
 // Start the server
 app.listen(port, '0.0.0.0', () => {
