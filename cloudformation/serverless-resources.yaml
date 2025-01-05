@@ -301,6 +301,36 @@ Resources:
         - Key: Name
           Value: !Sub "${Prefix}-${Env}-event-images"
 
+  # CloudFront Distribution
+  EventImageCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultCacheBehavior:
+          TargetOriginId: EventImageS3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        Origins:
+          - Id: EventImageS3Origin
+            DomainName: !GetAtt EventImageBucket.DomainName
+            S3OriginConfig: {}
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+        Comment: !Sub "CloudFront Distribution for ${Prefix}-${Env}-event-images"
+
   # Bucket Policy
   EventImageBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -309,6 +339,15 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
+          - Sid: AllowCloudFrontAccess
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::${Prefix}-${Env}-event-images/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${EventImageCloudFrontDistribution}"
           - Sid: AllowPublicReadAccess
             Effect: Allow
             Principal: "*"

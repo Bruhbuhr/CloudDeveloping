@@ -117,7 +117,7 @@ async function checkUserSubscription(userId) {
 }
 
 // Register route
-app.post('/register', async (req, res) => {
+app.post('/auth/register', async (req, res) => {
     const { email, username, password } = req.body;
 
     try {
@@ -155,7 +155,7 @@ app.post('/register', async (req, res) => {
 });
 
 // Login route
-app.post('/login', async (req, res) => {
+app.post('/auth/login', async (req, res) => {
     const { email, password } = req.body;
 
     try {
@@ -221,7 +221,7 @@ app.post('/login', async (req, res) => {
 });
 
 // Verify route
-app.post('/verify', async (req, res) => {
+app.post('/auth/verify', async (req, res) => {
     const { otp } = req.body;
 
     try {
@@ -245,6 +245,84 @@ app.post('/verify', async (req, res) => {
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Verification failed' });
+    }
+});
+
+// Endpoint to create an event
+app.post('/event/create', async (req, res) => {
+    const { name, description, location, startDate, endDate, image } = req.body;
+
+    try {
+        // Validate input
+        if (!name || !startDate || !image) {
+            return res.status(400).json({ error: 'Missing required fields: name, startDate, or image' });
+        }
+
+        Insert event details into the database (without the image URL yet)
+        const result = await pool.query(
+            'INSERT INTO events (name, description, location, start_date, end_date) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+            [name, description, location, startDate, endDate]
+        );
+
+        const eventId = result.rows[0].id;
+
+        // Prepare image data for API Gateway
+        const apiUrl = `${process.env.API_GATEWAY_URL}/create-event`;
+        const imageUploadPayload = {
+            image,
+            event_id: eventId,
+        };
+
+        // Call the API Gateway endpoint for image upload
+        const uploadResponse = await axios.post(apiUrl, imageUploadPayload, {
+            headers: {
+                'x-api-key': process.env.API_KEY,
+                'Content-Type': 'application/json',
+            },
+        });
+
+        if (uploadResponse.status !== 200 || !uploadResponse.data.image_url) {
+            throw new Error('Image upload failed');
+        }
+
+        const imageUrl = `${process.env.CLOUDFRONT_URL}/${eventId}/image.png`;
+
+        // Update the event record with the image URL
+        await pool.query(
+            'UPDATE events SET image_url = $1 WHERE id = $2',
+            [imageUrl, eventId]
+        );
+
+        res.status(201).json({
+            message: 'Event created successfully'
+        });
+    } catch (error) {
+        console.error('Error creating event:', error);
+        res.status(500).json({ error: 'Failed to create event' });
+    }
+});
+
+// Endpoint to get all events
+app.get('/event', async (req, res) => {
+    try {
+        if (!req.session.userId) {
+            return res.status(401).json({ error: 'Not logged in' });
+        }
+
+        // Check user subscription using userId in session
+        const isSubscribed = await checkUserSubscription(req.session.userId);
+        if (isSubscribed != 'Execution started successfully') {
+            return res.status(403).json({ error: 'User is not subscribed to notifications' });
+        }
+        
+        // Query to fetch all events
+        const result = await pool.query('SELECT * FROM events ORDER BY start_date ASC');
+
+        // Return the events in the response
+        res.json({ events: result.rows });
+    } catch (error) {
+        console.error('Error fetching events:', error);
+        res.status(500).json({ error: 'Failed to fetch events' });
     }
 });
 
