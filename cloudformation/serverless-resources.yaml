@@ -275,7 +275,7 @@ Resources:
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
 
   # New S3 Bucket for Storing Event Images
-  EventImageBucket:
+  EventBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "${Prefix}-${Env}-event-images"
@@ -323,7 +323,7 @@ Resources:
               Forward: none
         Origins:
           - Id: EventImageS3Origin
-            DomainName: !GetAtt EventImageBucket.DomainName
+            DomainName: !GetAtt EventBucket.DomainName
             S3OriginConfig: {}
         DefaultRootObject: index.html
         PriceClass: PriceClass_100
@@ -332,10 +332,10 @@ Resources:
         Comment: !Sub "CloudFront Distribution for ${Prefix}-${Env}-event-images"
 
   # Bucket Policy
-  EventImageBucketPolicy:
+  EventBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: !Ref EventImageBucket
+      Bucket: !Ref EventBucket
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -360,8 +360,8 @@ Resources:
             Action: "s3:PutObject"
             Resource: !Sub "arn:aws:s3:::${Prefix}-${Env}-event-images/*"
 
-  # Lambda function to handle image uploads
-  ImageUploadLambdaFunction:
+  # Lambda function to handle event image uploads
+  EventCreationLambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub "${Prefix}-${Env}-upload-event-image"
@@ -412,14 +412,79 @@ Resources:
                   }
       Environment:
         Variables:
-          EVENT_IMAGE_BUCKET: !Ref EventImageBucket
+          EVENT_IMAGE_BUCKET: !Ref EventBucket
       Timeout: 10
 
   # Grant permission for API Gateway to invoke the Lambda function
   LambdaImageUploadPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !GetAtt ImageUploadLambdaFunction.Arn
+      FunctionName: !GetAtt EventCreationLambdaFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
+
+  # Lambda function to handle ticket QR code uploads
+  TicketCreationLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Prefix}-${Env}-upload-ticket-qr"
+      Runtime: python3.9
+      Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import base64
+          import os
+          
+          s3 = boto3.client('s3')
+          
+          def lambda_handler(event, context):
+              try:
+                  body = json.loads(event['body'])
+                  image_data = body.get('image')
+                  event_id = body.get('event_id')
+                  user_id = body.get('user_id')
+                  
+                  if not image_data or not event_id or not user_id:
+                      return {
+                          "statusCode": 400,
+                          "body": json.dumps({"error": "Missing QR code or event ID or user ID"})
+                      }
+                  
+                  # Decode the base64 image data
+                  image_bytes = base64.b64decode(image_data)
+                  file_name = f"{event_id}/tickets/{user_id}/image.png"
+                  
+                  # Upload the image to S3
+                  s3.put_object(
+                      Bucket=os.environ['EVENT_IMAGE_BUCKET'],
+                      Key=file_name,
+                      Body=image_bytes,
+                      ContentType='image/png'
+                  )
+                  
+                  return {
+                      "statusCode": 200,
+                      "body": json.dumps({"message": "Image uploaded successfully", "image_url": f"s3://{os.environ['EVENT_IMAGE_BUCKET']}/{file_name}"})
+                  }
+              except Exception as e:
+                  return {
+                      "statusCode": 500,
+                      "body": json.dumps({"error": str(e)})
+                  }
+      Environment:
+        Variables:
+          EVENT_IMAGE_BUCKET: !Ref EventBucket
+      Timeout: 10
+
+  # Grant permission for API Gateway to invoke the Lambda function
+  LambdaTicketUploadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt TicketCreationLambdaFunction.Arn
       Action: "lambda:InvokeFunction"
       Principal: "apigateway.amazonaws.com"
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
@@ -535,6 +600,7 @@ Resources:
       RestApiId: !Ref ApiGatewayRestApi
       ResourceId: !Ref OTPResource
       HttpMethod: POST
+      ApiKeyRequired: true
       AuthorizationType: NONE
       Integration:
         Type: AWS_PROXY
@@ -594,11 +660,12 @@ Resources:
       RestApiId: !Ref ApiGatewayRestApi
       ResourceId: !Ref CreateEventResource
       HttpMethod: POST
+      ApiKeyRequired: true
       AuthorizationType: NONE
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
-        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ImageUploadLambdaFunction.Arn}/invocations"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${EventCreationLambdaFunction.Arn}/invocations"
       MethodResponses:
         - StatusCode: 200
           ResponseParameters:
@@ -646,6 +713,8 @@ Resources:
       - SubscribeMethodOptions
       - OTPMethodPost
       - OTPMethodOptions
+      - CreateEventMethodPost
+      - CreateEventMethodOptions
     Properties:
       RestApiId: !Ref ApiGatewayRestApi
       StageName: !Ref Env
@@ -663,7 +732,7 @@ Resources:
             "/subscribe/POST": 
               RateLimit: 50.0
               BurstLimit: 100
-            "/otp/POST":
+            "/send-otp/POST":
               RateLimit: 20.0
               BurstLimit: 50
       Quota:

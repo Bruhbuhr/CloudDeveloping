@@ -258,7 +258,7 @@ app.post('/event/create', async (req, res) => {
             return res.status(400).json({ error: 'Missing required fields: name, startDate, or image' });
         }
 
-        Insert event details into the database (without the image URL yet)
+        // Insert event details into the database (without the image URL yet)
         const result = await pool.query(
             'INSERT INTO events (name, description, location, start_date, end_date) VALUES ($1, $2, $3, $4, $5) RETURNING id',
             [name, description, location, startDate, endDate]
@@ -325,6 +325,9 @@ app.get('/event', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch events' });
     }
 });
+
+// Endpoint to subsribe the event
+app.post('/ticket/create', async (req, res) => {})
 
 // Start the server
 app.listen(port, '0.0.0.0', () => {
