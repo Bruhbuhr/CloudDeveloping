@@ -79,11 +79,12 @@ Resources:
         }
 
   # Step Functions State Machine for SNS subscription with email validation
-  StepFunctionsStateMachine:
+  StateMachine:
     Type: AWS::StepFunctions::StateMachine
     Properties:
-      StateMachineName: !Sub "${Prefix}-${Env}-sns-subscription"
+      StateMachineName: !Sub "${Prefix}-${Env}-topic-subscription"
       RoleArn: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
+      StateMachineType: EXPRESS
       DefinitionString: !Sub |
         {
           "Comment": "State Machine to handle SNS subscription",
@@ -102,7 +103,7 @@ Resources:
             },
             "CheckSubscriptionStatus": {
               "Type": "Task",
-              "Resource": "${CheckSubscriptionLambdaFunction.Arn}",
+              "Resource": "arn:aws:lambda:ap-southeast-1:879654127886:function:asm3-test-check-subscription",
               "ResultPath": "$.subscriptionStatus",
               "Next": "SubscriptionDecision"
             },
@@ -110,31 +111,24 @@ Resources:
               "Type": "Choice",
               "Choices": [
                 {
-                  "Variable": "$.subscriptionStatus.body.subscribed",
-                  "BooleanEquals": true,
-                  "Next": "AlreadySubscribed"
+                  "Variable": "$.subscriptionStatus.body.status",
+                  "StringEquals": "SUCCESS",
+                  "Next": "SubscriptionConfirmed"
                 },
                 {
-                  "Variable": "$.subscriptionStatus.body.subscribed",
-                  "BooleanEquals": false,
-                  "Next": "SendSubscriptionEmail"
+                  "Variable": "$.subscriptionStatus.body.status",
+                  "StringEquals": "FAIL",
+                  "Next": "SubscriptionFailed"
                 }
               ]
             },
-            "AlreadySubscribed": {
-              "Type": "Pass",
-              "Result": "Already subscribed!",
-              "End": true
+            "SubscriptionConfirmed": {
+              "Type": "Succeed",
+              "OutputPath": "$.subscriptionStatus.body"
             },
-            "SendSubscriptionEmail": {
-              "Type": "Task",
-              "Parameters": {
-                "Protocol": "EMAIL",
-                "Endpoint.$": "$.email",
-                "TopicArn": "${SNSTopic}"
-              },
-              "Resource": "arn:aws:states:::aws-sdk:sns:subscribe",
-              "End": true
+            "SubscriptionFailed": {
+              "Type": "Succeed",
+              "OutputPath": "$.subscriptionStatus.body"
             },
             "InvalidInput": {
               "Type": "Fail",
@@ -163,7 +157,6 @@ Resources:
           def lambda_handler(event, context):
               try:
                   email = event['email']
-          
                   topic_arn = os.environ['SNS_TOPIC_ARN']
           
                   response = sns.list_subscriptions_by_topic(
@@ -172,14 +165,26 @@ Resources:
           
                   for subscription in response['Subscriptions']:
                       if subscription['Endpoint'] == email:
-                          return {
-                              "statusCode": 200,
-                              "body": {"subscribed": True}
-                          }
-                  
+                          if subscription['SubscriptionArn'] == 'PendingConfirmation':
+                              return {
+                                  "statusCode": 200,
+                                  "body": {"status": "FAIL", "reason": "Subscription is not confirmed"}
+                              }
+                          elif subscription['SubscriptionArn'] == 'Deleted':
+                              return {
+                                  "statusCode": 200,
+                                  "body": {"status": "FAIL", "reason": "Subscription is deleted"}
+                              }
+                          else:
+                              return {
+                                  "statusCode": 200,
+                                  "body": {"status": "SUCCESS"}
+                              }
+          
+                  # Email not found in the topic's subscriptions
                   return {
                       "statusCode": 200,
-                      "body": {"subscribed": False}
+                      "body": {"status": "FAIL", "reason": "Email not subscribed"}
                   }
           
               except Exception as e:
@@ -301,36 +306,6 @@ Resources:
         - Key: Name
           Value: !Sub "${Prefix}-${Env}-event-images"
 
-  # CloudFront Distribution
-  EventImageCloudFrontDistribution:
-    Type: AWS::CloudFront::Distribution
-    Properties:
-      DistributionConfig:
-        Enabled: true
-        DefaultCacheBehavior:
-          TargetOriginId: EventImageS3Origin
-          ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods:
-            - GET
-            - HEAD
-          CachedMethods:
-            - GET
-            - HEAD
-          Compress: true
-          ForwardedValues:
-            QueryString: false
-            Cookies:
-              Forward: none
-        Origins:
-          - Id: EventImageS3Origin
-            DomainName: !GetAtt EventBucket.DomainName
-            S3OriginConfig: {}
-        DefaultRootObject: index.html
-        PriceClass: PriceClass_100
-        ViewerCertificate:
-          CloudFrontDefaultCertificate: true
-        Comment: !Sub "CloudFront Distribution for ${Prefix}-${Env}-event-images"
-
   # Bucket Policy
   EventBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -339,15 +314,6 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: AllowCloudFrontAccess
-            Effect: Allow
-            Principal:
-              Service: cloudfront.amazonaws.com
-            Action: "s3:GetObject"
-            Resource: !Sub "arn:aws:s3:::${Prefix}-${Env}-event-images/*"
-            Condition:
-              StringEquals:
-                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${EventImageCloudFrontDistribution}"
           - Sid: AllowPublicReadAccess
             Effect: Allow
             Principal: "*"
@@ -521,12 +487,12 @@ Resources:
       Integration:
         Type: AWS
         IntegrationHttpMethod: POST
-        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:states:action/StartExecution"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:states:action/StartSyncExecution"
         Credentials: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
         RequestTemplates:
           application/json: !Sub |
             {
-              "stateMachineArn": "${StepFunctionsStateMachine}",
+              "stateMachineArn": "${StateMachine}",
               "input": "{ \"email\": \"$input.params().querystring.get('email')\" }"
             }
         IntegrationResponses:
@@ -535,10 +501,7 @@ Resources:
               method.response.header.Access-Control-Allow-Origin: "'*'"
             ResponseTemplates:
               application/json: |
-                {
-                  "message": "Execution started successfully",
-                  "executionArn": "$input.path('$.executionArn')"
-                }
+                $input.path('$.output')
           - StatusCode: 400
             ResponseParameters:
               method.response.header.Access-Control-Allow-Origin: "'*'"
