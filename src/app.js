@@ -252,7 +252,7 @@ app.post('/event/create', verifyToken, async (req, res) => {
             throw new Error('Image upload failed');
         }
 
-        const imageUrl = `${eventId}/image.png`;
+        const imageUrl = `${process.env.S3_BUCKET}/${eventId}/image.png`;
 
         await pool.query(
             'UPDATE events SET image_url = $1 WHERE id = $2',
@@ -270,11 +270,21 @@ app.post('/event/create', verifyToken, async (req, res) => {
 app.get('/event', verifyToken, async (req, res) => {
     try {
         const isSubscribed = await checkUserSubscription(req.user.id);
-        if (isSubscribed == 'FAIL') {
+        if (isSubscribed === 'FAIL') {
             return res.status(403).json({ error: 'User is not subscribed to notifications' });
         }
 
+        const cacheKey = 'events:all';
+        const cachedEvents = await redisClient.get(cacheKey);
+
+        if (cachedEvents) {
+            console.log('Cache hit for all events');
+            return res.json({ events: JSON.parse(cachedEvents) });
+        }
+
+        console.log('Cache miss for all events');
         const result = await pool.query('SELECT * FROM events ORDER BY start_date ASC');
+        await redisClient.set(cacheKey, JSON.stringify(result.rows), 'EX', 30);
         res.json({ events: result.rows });
     } catch (error) {
         console.error('Error fetching events:', error);
@@ -360,7 +370,15 @@ app.get('/ticket', verifyToken, async (req, res) => {
             return res.status(403).json({ error: 'User is not subscribed to notifications' });
         }
 
-        // Fetch tickets from the database with additional details
+        const cacheKey = `ticket:all`;
+        const cachedTicket = await redisClient.get(cacheKey);
+
+        if (cachedTicket) {
+            console.log(`Cache hit for all tickets`);
+            return res.json({ ticket: JSON.parse(cachedTicket) });
+        }
+
+        console.log(`Cache miss for all tickets`);
         const result = await pool.query(
             `SELECT 
                 tickets.id AS ticket_id,
@@ -378,6 +396,7 @@ app.get('/ticket', verifyToken, async (req, res) => {
              ORDER BY tickets.created_at DESC`,
             [req.user.id]
         );
+        await redisClient.set(cacheKey, JSON.stringify(result.rows), 'EX', 30);
 
         res.status(200).json({ tickets: result.rows });
     } catch (error) {
@@ -391,18 +410,26 @@ app.get('/event/:id', verifyToken, async (req, res) => {
     const { id } = req.params;
 
     try {
-        // Check user subscription
         const isSubscribed = await checkUserSubscription(req.user.id);
         if (isSubscribed === 'FAIL') {
             return res.status(403).json({ error: 'User is not subscribed to notifications' });
         }
 
-        // Fetch event details
+        const cacheKey = `event:${id}`;
+        const cachedEvent = await redisClient.get(cacheKey);
+
+        if (cachedEvent) {
+            console.log(`Cache hit for event ID: ${id}`);
+            return res.json({ event: JSON.parse(cachedEvent) });
+        }
+
+        console.log(`Cache miss for event ID: ${id}`);
         const eventResult = await pool.query('SELECT * FROM events WHERE id = $1', [id]);
         if (eventResult.rows.length === 0) {
             return res.status(404).json({ error: 'Event not found' });
         }
 
+        await redisClient.set(cacheKey, JSON.stringify(eventResult.rows[0]), 'EX', 30);
         res.status(200).json({ event: eventResult.rows[0] });
     } catch (error) {
         console.error('Error fetching event:', error);
@@ -415,13 +442,20 @@ app.get('/ticket/:id', verifyToken, async (req, res) => {
     const { id } = req.params;
 
     try {
-        // Check user subscription
         const isSubscribed = await checkUserSubscription(req.user.id);
         if (isSubscribed === 'FAIL') {
             return res.status(403).json({ error: 'User is not subscribed to notifications' });
         }
 
-        // Fetch ticket details
+        const cacheKey = `ticket:${id}`;
+        const cachedTicket = await redisClient.get(cacheKey);
+
+        if (cachedTicket) {
+            console.log(`Cache hit for ticket ID: ${id}`);
+            return res.json({ ticket: JSON.parse(cachedTicket) });
+        }
+
+        console.log(`Cache miss for ticket ID: ${id}`);
         const ticketResult = await pool.query(
             `SELECT 
                 tickets.id AS ticket_id,
@@ -444,6 +478,7 @@ app.get('/ticket/:id', verifyToken, async (req, res) => {
             return res.status(404).json({ error: 'Ticket not found or access denied' });
         }
 
+        await redisClient.set(cacheKey, JSON.stringify(ticketResult.rows[0]), 'EX', 30);
         res.status(200).json({ ticket: ticketResult.rows[0] });
     } catch (error) {
         console.error('Error fetching ticket:', error);
