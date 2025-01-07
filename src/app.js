@@ -40,6 +40,38 @@ redisClient.on('error', (err) => console.error('Redis Client Error', err));
 app.use(cors());
 app.use(json());
 
+// Function to log user activity
+const logActivity = async (user_id, activity, extra_data = {}) => {
+    if (typeof user_id !== 'string') {
+        throw new Error('user_id must be a string');
+    }
+    if (typeof activity !== 'string') {
+        throw new Error('activity must be a string');
+    }
+    if (typeof extra_data !== 'object') {
+        throw new Error('extra_data must be an object');
+    }
+
+    const activityLogUrl = `${process.env.API_GATEWAY_URL}/log-activity`;
+    const activityPayload = {
+        user_id,
+        activity,
+        extra_data,
+    };
+
+    try {
+        await axios.post(activityLogUrl, activityPayload, {
+            headers: {
+                'x-api-key': process.env.API_KEY,
+                'Content-Type': 'application/json',
+            },
+        });
+        console.log(`Activity logged: ${activity}`);
+    } catch (error) {
+        console.error('Failed to log activity:', error);
+    }
+};
+
 // Function to generate QR code
 const generateQRCode = async (text) => {
     try {
@@ -104,11 +136,24 @@ app.post('/auth/register', async (req, res) => {
         }
 
         const hashedPassword = await hash(password, 10);
-        await pool.query(
+        const result = await pool.query(
             'INSERT INTO users (email, username, password) VALUES ($1, $2, $3) RETURNING *',
             [email, username, hashedPassword]
         );
 
+        const newUser = result.rows[0];
+        
+        // Log activity for registration
+        await logActivity(
+            newUser.id.toString(), 
+            'User Registered', 
+            { 
+                email: email.toString(), 
+                username: username.toString() 
+            }
+        );
+
+        // Send subscription request
         const apiUrl = `${process.env.API_GATEWAY_URL}/subscribe?email=${encodeURIComponent(email)}`;
         await axios.post(apiUrl, {}, {
             headers: {
@@ -165,6 +210,8 @@ app.post('/auth/login', async (req, res) => {
             },
         });
 
+        await logActivity(user.id.toString(), 'User Login Attempt', { otp: otp.toString() });
+
         res.json({ message: 'OTP sent. Please verify to complete login.' });
     } catch (error) {
         console.error(error);
@@ -211,6 +258,8 @@ app.post('/auth/verify', async (req, res) => {
 
         // Clear the OTP from Redis after successful verification
         await redisClient.del(email);
+
+        await logActivity(user.id.toString(), 'User Verify OTP Attempt', { otp: otp.toString(), stored_otp: storedOtp.toString() });
 
         res.json({ message: 'Verification successful', token });
     } catch (error) {
@@ -259,6 +308,8 @@ app.post('/event/create', verifyToken, async (req, res) => {
             [imageUrl, eventId]
         );
 
+        await logActivity(req.user.id.toString(), 'User Create Event Attempt', { event_id: eventId.toString(), event_name: name.toString() });
+
         res.status(201).json({ message: 'Event created successfully' });
     } catch (error) {
         console.error('Error creating event:', error);
@@ -285,6 +336,7 @@ app.get('/event', verifyToken, async (req, res) => {
         console.log('Cache miss for all events');
         const result = await pool.query('SELECT * FROM events ORDER BY start_date ASC');
         await redisClient.set(cacheKey, JSON.stringify(result.rows), 'EX', 30);
+        await logActivity(req.user.id.toString(), 'User Get All Events Attempt');
         res.json({ events: result.rows });
     } catch (error) {
         console.error('Error fetching events:', error);
@@ -353,6 +405,17 @@ app.post('/ticket/create', verifyToken, async (req, res) => {
             [req.user.id, event_id, ticketCode, ticketPrice, qrCodeUrl]
         );
 
+        const resultTicket = await pool.query('SELECT id FROM tickets WHERE user_id = $1 AND event_id = $2', [req.user.id, event_id]);
+        if (resultTicket.rows.length === 0) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+
+        const ticket = resultTicket.rows[0];
+        await logActivity(req.user.id.toString(), 'User Buy Ticket Attempt', {
+            event_id: event_id.toString(),
+            ticket_id: ticket.id.toString()
+        });
+
         // Return success response with ticket details
         res.status(201).json({ message: 'Ticket created successfully' });
     } catch (error) {
@@ -397,6 +460,7 @@ app.get('/ticket', verifyToken, async (req, res) => {
             [req.user.id]
         );
         await redisClient.set(cacheKey, JSON.stringify(result.rows), 'EX', 30);
+        await logActivity(req.user.id.toString(), 'User Get All Tickets Attempt');
 
         res.status(200).json({ tickets: result.rows });
     } catch (error) {
@@ -430,6 +494,7 @@ app.get('/event/:id', verifyToken, async (req, res) => {
         }
 
         await redisClient.set(cacheKey, JSON.stringify(eventResult.rows[0]), 'EX', 30);
+        await logActivity(req.user.id.toString(), 'User Get Specific Event Attempt', { event_id: id.toString() });
         res.status(200).json({ event: eventResult.rows[0] });
     } catch (error) {
         console.error('Error fetching event:', error);
@@ -479,6 +544,7 @@ app.get('/ticket/:id', verifyToken, async (req, res) => {
         }
 
         await redisClient.set(cacheKey, JSON.stringify(ticketResult.rows[0]), 'EX', 30);
+        await logActivity(req.user.id.toString(), 'User Get Specific Ticket Attempt', { event_id: id.toString() });
         res.status(200).json({ ticket: ticketResult.rows[0] });
     } catch (error) {
         console.error('Error fetching ticket:', error);
@@ -522,6 +588,14 @@ app.post('/ticket/generate-qr-code', verifyToken, async (req, res) => {
                 'Content-Type': 'application/json',
             },
         });
+        
+        const resultTicket = await pool.query('SELECT id FROM tickets WHERE user_id = $1 AND event_id = $2', [req.user.id, event_id]);
+        if (resultTicket.rows.length === 0) {
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+
+        const ticket = resultTicket.rows[0];
+        await logActivity(req.user.id.toString(), 'User Get Pre-Signed URL For Ticket QR Code Attempt', { ticket_id: ticket.id.toString(), event_id: event_id.toString() });
 
         // Parse and return the pre-signed URL
         if (response.status === 200) {

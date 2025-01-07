@@ -521,6 +521,95 @@ Resources:
       Principal: "apigateway.amazonaws.com"
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
 
+  # DynamoDB table for user activity logs
+  UserActivityLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Prefix}-${Env}-user-activity-logs"
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: N
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+  # Lambda function for storing activity logs into DynamoDB
+  ActivityLogLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Prefix}-${Env}-log-user-activity"
+      Runtime: python3.9
+      Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          from datetime import datetime
+          
+          dynamodb = boto3.resource('dynamodb')
+          table_name = os.environ['ACTIVITY_LOG_TABLE']
+          table = dynamodb.Table(table_name)
+          
+          def lambda_handler(event, context):
+              try:
+                  # Parse the incoming JSON body
+                  body = json.loads(event['body'])
+                  user_id = body.get('user_id')
+                  activity = body.get('activity')
+                  extra_data = {k: v for k, v in body.items() if k not in ['user_id', 'activity']}
+                  
+                  if not user_id or not activity:
+                      return {
+                          "statusCode": 400,
+                          "body": json.dumps({"error": "Missing user_id or activity data"})
+                      }
+                  
+                  # Generate the timestamp
+                  timestamp = int(datetime.utcnow().timestamp())
+                  
+                  # Prepare item with mandatory fields and dynamic columns (extra_data)
+                  item = {
+                      'user_id': user_id,
+                      'timestamp': timestamp,
+                      'activity': activity,
+                      'extra_data': extra_data  # Storing extra data in a Map
+                  }
+                  
+                  # Insert activity log into DynamoDB
+                  table.put_item(Item=item)
+                  
+                  return {
+                      "statusCode": 200,
+                      "body": json.dumps({"message": "Activity logged successfully"})
+                  }
+              except Exception as e:
+                  return {
+                      "statusCode": 500,
+                      "body": json.dumps({"error": str(e)})
+                  }
+      Environment:
+        Variables:
+          ACTIVITY_LOG_TABLE: !Ref UserActivityLogTable
+      Timeout: 10
+
+  # Grant permission for API Gateway to invoke the ActivityLog Lambda function
+  LambdaLogPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ActivityLogLambdaFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
+
   # API Gateway and associated resources
   ApiGatewayRestApi:
     Type: AWS::ApiGateway::RestApi
@@ -854,6 +943,66 @@ Resources:
             method.response.header.Access-Control-Allow-Methods: true
             method.response.header.Access-Control-Allow-Origin: true
 
+  # API Gateway '/log-activity' resource path
+  LogActivityResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'log-activity'
+  
+  # '/log-activity' POST method
+  LogActivityMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref LogActivityResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ActivityLogLambdaFunction.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+  
+  # '/log-activity' OPTIONS method for CORS preflight
+  LogActivityMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref LogActivityResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
   # Update Deployment
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
@@ -866,6 +1015,8 @@ Resources:
       - CreateEventMethodOptions
       - CreateTicketMethodPost
       - CreateTicketMethodOptions
+      - LogActivityMethodPost
+      - LogActivityMethodOptions
     Properties:
       RestApiId: !Ref ApiGatewayRestApi
       StageName: !Ref Env
