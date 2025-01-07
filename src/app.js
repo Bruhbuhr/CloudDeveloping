@@ -387,6 +387,72 @@ app.get('/ticket', verifyToken, async (req, res) => {
     }
 });
 
+// Get specific event by ID
+app.get('/event/:id', verifyToken, async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        // Check user subscription
+        const isSubscribed = await checkUserSubscription(req.user.id);
+        if (isSubscribed === 'FAIL') {
+            return res.status(403).json({ error: 'User is not subscribed to notifications' });
+        }
+
+        // Fetch event details
+        const eventResult = await pool.query('SELECT * FROM events WHERE id = $1', [id]);
+        if (eventResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Event not found' });
+        }
+
+        res.status(200).json({ event: eventResult.rows[0] });
+    } catch (error) {
+        console.error('Error fetching event:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get specific ticket by ID
+app.get('/ticket/:id', verifyToken, async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        // Check user subscription
+        const isSubscribed = await checkUserSubscription(req.user.id);
+        if (isSubscribed === 'FAIL') {
+            return res.status(403).json({ error: 'User is not subscribed to notifications' });
+        }
+
+        // Fetch ticket details
+        const ticketResult = await pool.query(
+            `SELECT 
+                tickets.id AS ticket_id,
+                tickets.ticket_code,
+                tickets.status,
+                tickets.price,
+                tickets.qr_code_url,
+                tickets.created_at,
+                events.id AS event_id,
+                events.name AS event_name,
+                events.start_date,
+                events.end_date,
+                events.location
+             FROM tickets 
+             JOIN events ON tickets.event_id = events.id 
+             WHERE tickets.id = $1 AND tickets.user_id = $2`,
+            [id, req.user.id]
+        );
+
+        if (ticketResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Ticket not found or access denied' });
+        }
+
+        res.status(200).json({ ticket: ticketResult.rows[0] });
+    } catch (error) {
+        console.error('Error fetching ticket:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // Start the server
 app.listen(port, '0.0.0.0', () => {
     console.log(`Server listening on port ${port}`);

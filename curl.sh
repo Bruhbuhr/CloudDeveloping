@@ -41,3 +41,9 @@ curl -X POST http://localhost:3000/ticket/create \
 
 curl -X GET http://localhost:3000/ticket \
 -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MywiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzQ1NTEsImV4cCI6MTczNjIzODE1MX0.332qTZXRNfPnSSm8k0JpJghzYL84YOWQQDKWlta_yLU"
+
+curl -X GET http://localhost:3000/ticket/1 \
+-H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MywiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzQ1NTEsImV4cCI6MTczNjIzODE1MX0.332qTZXRNfPnSSm8k0JpJghzYL84YOWQQDKWlta_yLU"
+
+curl -X GET http://localhost:3000/event/1 \
+-H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MywiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzQ1NTEsImV4cCI6MTczNjIzODE1MX0.332qTZXRNfPnSSm8k0JpJghzYL84YOWQQDKWlta_yLU"
