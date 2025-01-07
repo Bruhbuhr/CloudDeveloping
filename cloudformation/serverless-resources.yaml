@@ -455,6 +455,72 @@ Resources:
       Principal: "apigateway.amazonaws.com"
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
 
+  # Pre-Signed URL creation
+  TicketPresignedUrlLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Prefix}-${Env}-get-ticket-presigned-url"
+      Runtime: python3.9
+      Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          
+          s3 = boto3.client('s3')
+          
+          def lambda_handler(event, context):
+              try:
+                  # Parse the input parameters
+                  body = json.loads(event['body'])
+                  user_id = body.get('user_id')
+                  event_id = body.get('event_id')
+                  
+                  if not user_id or not event_id:
+                      return {
+                          "statusCode": 400,
+                          "body": json.dumps({"error": "Missing user_id or event_id"})
+                      }
+                  
+                  # Construct the S3 object key
+                  bucket_name = os.environ['EVENT_IMAGE_BUCKET']
+                  file_key = f"{event_id}/tickets/{user_id}/image.png"
+                  
+                  # Generate a pre-signed URL valid for 1 minute
+                  presigned_url = s3.generate_presigned_url(
+                      'get_object',
+                      Params={
+                          'Bucket': bucket_name,
+                          'Key': file_key
+                      },
+                      ExpiresIn=60
+                  )
+                  
+                  return {
+                      "statusCode": 200,
+                      "body": json.dumps({"presigned_url": presigned_url})
+                  }
+              except Exception as e:
+                  return {
+                      "statusCode": 500,
+                      "body": json.dumps({"error": str(e)})
+                  }
+      Environment:
+        Variables:
+          EVENT_IMAGE_BUCKET: !Ref EventBucket
+      Timeout: 10
+  
+  # Grant permission for API Gateway to invoke the Lambda function
+  LambdaPresignedUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt TicketPresignedUrlLambdaFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
+
   # API Gateway and associated resources
   ApiGatewayRestApi:
     Type: AWS::ApiGateway::RestApi
@@ -706,6 +772,66 @@ Resources:
     Properties:
       RestApiId: !Ref ApiGatewayRestApi
       ResourceId: !Ref CreateTicketResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/get-qr-code' resource path
+  GetQRCodeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'get-qr-code'
+
+  # '/get-qr-code' POST method
+  GetQRCodeMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref GetQRCodeResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TicketPresignedUrlLambdaFunction.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/get-qr-code' OPTIONS method for CORS preflight
+  GetQRCodeMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref GetQRCodeResource
       HttpMethod: OPTIONS
       AuthorizationType: NONE
       Integration:

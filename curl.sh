@@ -17,11 +17,11 @@ curl -X POST http://localhost:3000/auth/verify \
   -H "Content-Type: application/json" \
   -d '{
     "email": "khangtgr@gmail.com",
-    "otp": "177236"
+    "otp": "589761"
   }'
 
 curl -X POST http://localhost:3000/event/create \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MywiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzQ1NTEsImV4cCI6MTczNjIzODE1MX0.332qTZXRNfPnSSm8k0JpJghzYL84YOWQQDKWlta_yLU" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzc4OTcsImV4cCI6MTczNjI0MTQ5N30.yL1nfCBQLVV-moJG9Gq8LeWQ09oPo_1Tg6Q0OdxQmSQ" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Tech Conference 2025",
@@ -33,17 +33,24 @@ curl -X POST http://localhost:3000/event/create \
   }'
 
 curl -X POST http://localhost:3000/ticket/create \
--H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MywiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzQ1NTEsImV4cCI6MTczNjIzODE1MX0.332qTZXRNfPnSSm8k0JpJghzYL84YOWQQDKWlta_yLU" \
+-H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzc4OTcsImV4cCI6MTczNjI0MTQ5N30.yL1nfCBQLVV-moJG9Gq8LeWQ09oPo_1Tg6Q0OdxQmSQ" \
 -H "Content-Type: application/json" \
 -d '{
-    "event_id": 4
+    "event_id": 1
 }'
 
 curl -X GET http://localhost:3000/ticket \
--H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MywiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzQ1NTEsImV4cCI6MTczNjIzODE1MX0.332qTZXRNfPnSSm8k0JpJghzYL84YOWQQDKWlta_yLU"
+-H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzc4OTcsImV4cCI6MTczNjI0MTQ5N30.yL1nfCBQLVV-moJG9Gq8LeWQ09oPo_1Tg6Q0OdxQmSQ"
 
 curl -X GET http://localhost:3000/ticket/1 \
--H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MywiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzQ1NTEsImV4cCI6MTczNjIzODE1MX0.332qTZXRNfPnSSm8k0JpJghzYL84YOWQQDKWlta_yLU"
+-H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzc4OTcsImV4cCI6MTczNjI0MTQ5N30.yL1nfCBQLVV-moJG9Gq8LeWQ09oPo_1Tg6Q0OdxQmSQ"
 
 curl -X GET http://localhost:3000/event/1 \
--H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MywiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzQ1NTEsImV4cCI6MTczNjIzODE1MX0.332qTZXRNfPnSSm8k0JpJghzYL84YOWQQDKWlta_yLU"
+-H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzc4OTcsImV4cCI6MTczNjI0MTQ5N30.yL1nfCBQLVV-moJG9Gq8LeWQ09oPo_1Tg6Q0OdxQmSQ"
+
+curl -X POST http://localhost:3000/ticket/generate-qr-code \
+-H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyMzc4OTcsImV4cCI6MTczNjI0MTQ5N30.yL1nfCBQLVV-moJG9Gq8LeWQ09oPo_1Tg6Q0OdxQmSQ" \
+-H "Content-Type: application/json" \
+-d '{
+    "event_id": 1
+}'

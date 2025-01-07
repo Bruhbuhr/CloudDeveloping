@@ -364,7 +364,6 @@ app.get('/ticket', verifyToken, async (req, res) => {
         const result = await pool.query(
             `SELECT 
                 tickets.id AS ticket_id,
-                tickets.ticket_code,
                 tickets.status,
                 tickets.price,
                 tickets.created_at,
@@ -426,7 +425,6 @@ app.get('/ticket/:id', verifyToken, async (req, res) => {
         const ticketResult = await pool.query(
             `SELECT 
                 tickets.id AS ticket_id,
-                tickets.ticket_code,
                 tickets.status,
                 tickets.price,
                 tickets.qr_code_url,
@@ -450,6 +448,56 @@ app.get('/ticket/:id', verifyToken, async (req, res) => {
     } catch (error) {
         console.error('Error fetching ticket:', error);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get pre-signed URL for ticket QR code
+app.post('/ticket/generate-qr-code', verifyToken, async (req, res) => {
+    const { event_id } = req.body;
+
+    try {
+        // Validate the event ID
+        if (!event_id) {
+            return res.status(400).json({ error: 'Event ID is required' });
+        }
+
+        // Check user subscription
+        const isSubscribed = await checkUserSubscription(req.user.id);
+        if (isSubscribed === 'FAIL') {
+            return res.status(403).json({ error: 'User is not subscribed to notifications' });
+        }
+
+        // Ensure the event exists
+        const eventCheck = await pool.query('SELECT id FROM events WHERE id = $1', [event_id]);
+        if (eventCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Event not found' });
+        }
+
+        // Define API Gateway URL and payload
+        const apiUrl = `${process.env.API_GATEWAY_URL}/get-qr-code`;
+        const payload = {
+            event_id,
+            user_id: req.user.id,
+        };
+
+        // Invoke API Gateway to generate the pre-signed URL
+        const response = await axios.post(apiUrl, payload, {
+            headers: {
+                'x-api-key': process.env.API_KEY,
+                'Content-Type': 'application/json',
+            },
+        });
+
+        // Parse and return the pre-signed URL
+        if (response.status === 200) {
+            const { presigned_url } = response.data;
+            return res.status(200).json({ presigned_url });
+        } else {
+            return res.status(response.status).json({ error: response.data.error || 'Failed to generate QR code URL' });
+        }
+    } catch (error) {
+        console.error('Error generating QR code pre-signed URL:', error.message);
+        return res.status(500).json({ error: 'Internal server error' });
     }
 });
 
