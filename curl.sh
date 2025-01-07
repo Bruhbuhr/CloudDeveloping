@@ -1,27 +1,27 @@
 curl -X POST http://localhost:3000/auth/register \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "khangtgr@gmail.com",
-    "username": "khang",
+    "email": "example@gmail.com",
+    "username": "john",
     "password": "securepassword"
   }'
 
 curl -X POST http://localhost:3000/auth/login \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "khangtgr@gmail.com",
+    "email": "example@gmail.com",
     "password": "securepassword"
   }'
 
 curl -X POST http://localhost:3000/auth/verify \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "khangtgr@gmail.com",
-    "otp": "436103"
+    "email": "example@gmail.com",
+    "otp": "000000"
   }'
 
 curl -X POST http://localhost:3000/event/create \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyNDIxMTksImV4cCI6MTczNjI0NTcxOX0.S84EFKowbYe2TSzqFUT9g-4HOqPQV-J8Xoq3Sbu9P-w" \
+  -H "Authorization: Bearer abc..." \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Tech Conference 2025",
@@ -33,26 +33,26 @@ curl -X POST http://localhost:3000/event/create \
   }'
 
 curl -X POST http://localhost:3000/ticket/create \
--H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyNDIxMTksImV4cCI6MTczNjI0NTcxOX0.S84EFKowbYe2TSzqFUT9g-4HOqPQV-J8Xoq3Sbu9P-w" \
+-H "Authorization: Bearer abc..." \
 -H "Content-Type: application/json" \
 -d '{
     "event_id": 2
 }'
 
 curl -X GET http://localhost:3000/ticket \
--H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyNDIxMTksImV4cCI6MTczNjI0NTcxOX0.S84EFKowbYe2TSzqFUT9g-4HOqPQV-J8Xoq3Sbu9P-w"
+-H "Authorization: Bearer abc..."
 
 curl -X GET http://localhost:3000/event \
--H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyNDIxMTksImV4cCI6MTczNjI0NTcxOX0.S84EFKowbYe2TSzqFUT9g-4HOqPQV-J8Xoq3Sbu9P-w"
+-H "Authorization: Bearer abc..."
 
 curl -X GET http://localhost:3000/ticket/1 \
--H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyNDIxMTksImV4cCI6MTczNjI0NTcxOX0.S84EFKowbYe2TSzqFUT9g-4HOqPQV-J8Xoq3Sbu9P-w"
+-H "Authorization: Bearer abc..."
 
 curl -X GET http://localhost:3000/event/2 \
--H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyNDIxMTksImV4cCI6MTczNjI0NTcxOX0.S84EFKowbYe2TSzqFUT9g-4HOqPQV-J8Xoq3Sbu9P-w"
+-H "Authorization: Bearer abc..."
 
 curl -X POST http://localhost:3000/ticket/generate-qr-code \
--H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwiZW1haWwiOiJraGFuZ3RnckBnbWFpbC5jb20iLCJpYXQiOjE3MzYyNDIxMTksImV4cCI6MTczNjI0NTcxOX0.S84EFKowbYe2TSzqFUT9g-4HOqPQV-J8Xoq3Sbu9P-w" \
+-H "Authorization: Bearer abc..." \
 -H "Content-Type: application/json" \
 -d '{
     "event_id": "1"
