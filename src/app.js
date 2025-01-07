@@ -2,6 +2,7 @@
 const dotenv = require('dotenv');
 dotenv.config();
 
+const QRCode = require('qrcode');
 const express = require('express');
 const bodyParser = require('body-parser');
 const { json } = bodyParser;
@@ -38,6 +39,16 @@ redisClient.on('error', (err) => console.error('Redis Client Error', err));
 // Middleware
 app.use(cors());
 app.use(json());
+
+// Function to generate QR code
+const generateQRCode = async (text) => {
+    try {
+        const qrCodeDataURL = await QRCode.toDataURL(text);
+        return qrCodeDataURL;
+    } catch (error) {
+        throw new Error('Failed to generate QR code');
+    }
+};
 
 // Helper functions
 function generateOtp() {
@@ -268,6 +279,111 @@ app.get('/event', verifyToken, async (req, res) => {
     } catch (error) {
         console.error('Error fetching events:', error);
         res.status(500).json({ error: 'Failed to fetch events' });
+    }
+});
+
+// Endpoint to create a ticket for an event
+app.post('/ticket/create', verifyToken, async (req, res) => {
+    const { event_id } = req.body;
+
+    try {
+        if (!event_id) {
+            return res.status(400).json({ error: 'Event ID is required' });
+        }
+
+        // Check user subscription
+        const isSubscribed = await checkUserSubscription(req.user.id);
+        if (isSubscribed === 'FAIL') {
+            return res.status(403).json({ error: 'User is not subscribed to notifications' });
+        }
+
+        // Ensure the event exists
+        const eventCheck = await pool.query('SELECT id FROM events WHERE id = $1', [event_id]);
+        if (eventCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Event not found' });
+        }
+
+        // Generate a unique ticket code
+        const ticketCode = `TICKET-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+
+        // Generate QR code
+        const qrCodeDataURL = await generateQRCode(ticketCode);
+
+        // Decode QR Code Data URL to binary
+        const qrCodeBuffer = Buffer.from(qrCodeDataURL.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+
+        // Prepare API Gateway payload
+        const apiUrl = `${process.env.API_GATEWAY_URL}/create-ticket`;
+        const payload = {
+            event_id,
+            user_id: req.user.id,
+            image: qrCodeBuffer.toString('base64'),
+        };
+
+        // Call API Gateway to upload QR code and get S3 URL
+        const uploadResponse = await axios.post(apiUrl, payload, {
+            headers: {
+                'x-api-key': process.env.API_KEY,
+                'Content-Type': 'application/json',
+            },
+        });
+
+        if (uploadResponse.status !== 200 || !uploadResponse.data.image_url) {
+            throw new Error('Image upload failed');
+        }
+
+        // Get the uploaded QR code URL
+        const qrCodeUrl = uploadResponse.data.image_url;
+
+        // Insert ticket into the database
+        const ticketPrice = 50.00; // Placeholder value
+        await pool.query(
+            `INSERT INTO tickets (user_id, event_id, ticket_code, price, qr_code_url)
+             VALUES ($1, $2, $3, $4, $5) RETURNING id, ticket_code, status, price, qr_code_url, created_at`,
+            [req.user.id, event_id, ticketCode, ticketPrice, qrCodeUrl]
+        );
+
+        // Return success response with ticket details
+        res.status(201).json({ message: 'Ticket created successfully' });
+    } catch (error) {
+        console.error('Error creating ticket:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Endpoint to fetch all tickets for the authenticated user
+app.get('/ticket', verifyToken, async (req, res) => {
+    try {
+        // Check user subscription
+        const isSubscribed = await checkUserSubscription(req.user.id);
+        if (isSubscribed === 'FAIL') {
+            return res.status(403).json({ error: 'User is not subscribed to notifications' });
+        }
+
+        // Fetch tickets from the database with additional details
+        const result = await pool.query(
+            `SELECT 
+                tickets.id AS ticket_id,
+                tickets.ticket_code,
+                tickets.status,
+                tickets.price,
+                tickets.created_at,
+                events.id AS event_id,
+                events.name AS event_name,
+                events.start_date,
+                events.end_date,
+                events.location
+             FROM tickets 
+             JOIN events ON tickets.event_id = events.id 
+             WHERE tickets.user_id = $1 
+             ORDER BY tickets.created_at DESC`,
+            [req.user.id]
+        );
+
+        res.status(200).json({ tickets: result.rows });
+    } catch (error) {
+        console.error('Error fetching tickets:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
