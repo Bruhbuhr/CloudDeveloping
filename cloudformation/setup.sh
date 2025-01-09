@@ -31,19 +31,6 @@ aws cloudformation update-stack \
     --parameters ParameterKey=Prefix,ParameterValue=$PREFIX ParameterKey=Env,ParameterValue=$ENV ParameterKey=Role,ParameterValue=$IAM_ROLE \
     --profile=$AWS_PROFILE
 
-# Pipeline resources
-aws cloudformation create-stack \
-    --stack-name $PREFIX-pipeline-$ENV-stack \
-    --template-body file://pipeline-resources.yaml \
-    --parameters ParameterKey=Prefix,ParameterValue=$PREFIX ParameterKey=Env,ParameterValue=$ENV ParameterKey=Role,ParameterValue=$IAM_ROLE \
-    --profile=$AWS_PROFILE
-
-aws cloudformation update-stack \
-    --stack-name $PREFIX-pipeline-$ENV-stack \
-    --template-body file://pipeline-resources.yaml \
-    --parameters ParameterKey=Prefix,ParameterValue=$PREFIX ParameterKey=Env,ParameterValue=$ENV ParameterKey=Role,ParameterValue=$IAM_ROLE \
-    --profile=$AWS_PROFILE
-
 # Clean resources
 aws cloudformation delete-stack \
     --stack-name $PREFIX-compute-$ENV-stack \
@@ -51,8 +38,4 @@ aws cloudformation delete-stack \
 
 aws cloudformation delete-stack \
     --stack-name $PREFIX-serverless-$ENV-stack \
-    --profile=$AWS_PROFILE
-
-aws cloudformation delete-stack \
-    --stack-name $PREFIX-pipeline-$ENV-stack \
     --profile=$AWS_PROFILE

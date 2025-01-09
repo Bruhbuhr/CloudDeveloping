@@ -267,6 +267,10 @@ Resources:
           FromPort: '80'
           ToPort: '80'
           SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '3000'
+          ToPort: '3000'
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
       Tags:
         - Key: Name
           Value: !Sub '${Prefix}-${Env}-container-sg'
@@ -428,46 +432,32 @@ Resources:
         - Key: Name
           Value: !Sub '${Prefix}-${Env}-rds-credentials'
 
-  # # ElastiCache Redis Cluster
-  # RedisCluster:
-  #   Type: AWS::ElastiCache::CacheCluster
-  #   Properties:
-  #     ClusterName: !Sub '${Prefix}-${Env}-redis-cluster'
-  #     Engine: redis
-  #     CacheNodeType: cache.t3.micro
-  #     NumCacheNodes: 1
-  #     AZMode: single-az
-  #     CacheSubnetGroupName: !Ref ElastiCacheSubnetGroup
-  #     CacheParameterGroupName: !Ref RedisParameterGroup
-  #     VpcSecurityGroupIds:
-  #       - !Ref ElastiCacheSecurityGroup
-  #     Tags:
-  #       - Key: Name
-  #         Value: !Sub '${Prefix}-${Env}-redis-cluster'
+  # ElastiCache Redis Cluster
+  RedisCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      ClusterName: !Sub '${Prefix}-${Env}-redis-cluster'
+      Engine: redis
+      CacheNodeType: cache.t3.micro
+      NumCacheNodes: 1
+      AZMode: single-az
+      CacheSubnetGroupName: !Ref ElastiCacheSubnetGroup
+      CacheParameterGroupName: !Ref RedisParameterGroup
+      VpcSecurityGroupIds:
+        - !Ref ElastiCacheSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${Prefix}-${Env}-redis-cluster'
 
-  # Target Group Blue
-  ELBTargetGroupBlue:
+  # Target Group
+  ELBTargetGroup:
     Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
     Properties:
-      Name: !Sub '${Prefix}-${Env}-alb-tg-blue'
+      Name: !Sub '${Prefix}-${Env}-alb-tg'
       HealthCheckIntervalSeconds: 6
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
-      Port: 80
-      Protocol: HTTP
-      UnhealthyThresholdCount: 2
-      VpcId: !Ref VPC
-      TargetType: ip
-
-  # Target Group Green
-  ELBTargetGroupGreen:
-    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
-    Properties:
-      Name: !Sub '${Prefix}-${Env}-alb-tg-green'
-      HealthCheckIntervalSeconds: 6
-      HealthCheckTimeoutSeconds: 5
-      HealthyThresholdCount: 2
-      Port: 80
+      Port: 3000
       Protocol: HTTP
       UnhealthyThresholdCount: 2
       VpcId: !Ref VPC
@@ -491,10 +481,607 @@ Resources:
     Properties:
       DefaultActions:
         - Type: forward
-          TargetGroupArn: !Ref ELBTargetGroupBlue
+          TargetGroupArn: !Ref ELBTargetGroup
       LoadBalancerArn: !Ref ElasticLoadBalancer
       Port: '80'
       Protocol: HTTP
+
+  # ECS Cluster (Fargate)
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${Prefix}-${Env}-ecs-cluster'
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 1
+
+  # ECS Task Definition
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${Prefix}-${Env}-backend-task'
+      ExecutionRoleArn: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
+      TaskRoleArn: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      RequiresCompatibilities:
+        - FARGATE
+      ContainerDefinitions:
+        - Name: "backend-container"
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${Prefix}-${Env}-backend-service:latest'
+          PortMappings:
+            - ContainerPort: 3000
+          Environment:
+            - Name: DB_HOST
+              Value: !Sub ${RDSPostgreSQLInstance.Endpoint.Address}
+            - Name: DB_DATABASE
+              Value: !Sub tickerydb
+            - Name: DB_PASSWORD
+              Value: !Join ['', ['{{resolve:secretsmanager:', !Ref RDSSecret, ':SecretString:password}}' ]]
+            - Name: DB_USER
+              Value: !Join ['', ['{{resolve:secretsmanager:', !Ref RDSSecret, ':SecretString:username}}' ]]
+            - Name: REDIS_HOST
+              Value: !Sub ${RedisCluster.RedisEndpoint.Address}
+            - Name: API_GATEWAY_URL
+              Value: !Ref ApiGatewayRestApi
+            - Name: API_KEY
+              Value: !Ref ApiKey
+            - Name: S3_BUCKET
+              Value: !Sub "https://${Prefix}-${Env}-upload-event-image"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub '/ecs/${Prefix}-${Env}-backend-task'
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: backend
+              awslogs-create-group: true
+              mode: non-blocking
+              max-buffer-size: 25m
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ECSTaskDefinition
+    Properties:
+      Cluster: !Sub '${Prefix}-${Env}-ecs-cluster'
+      TaskDefinition: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${Prefix}-${Env}-backend-task'
+      ServiceName: !Sub '${Prefix}-${Env}-ecs-service'
+      SchedulingStrategy: REPLICA
+      DesiredCount: 1
+      AvailabilityZoneRebalancing: ENABLED
+      LoadBalancers:
+        - ContainerName: "backend-container"
+          ContainerPort: 3000
+          TargetGroupArn: !Ref ELBTargetGroup
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups: 
+            - !Ref ContainerSecurityGroup
+          Subnets:        
+            - !Ref PublicSubnet1A
+            - !Ref PublicSubnet1B
+      PlatformVersion: LATEST
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      DeploymentController:
+        Type: ECS
+      ServiceConnectConfiguration:
+        Enabled: false
+      Tags: []
+      EnableECSManagedTags: true
+
+  # API Gateway and associated resources
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties: 
+      Name: !Sub "${Prefix}-${Env}-api"
+      Description: API Gateway for managing serverless features
+      EndpointConfiguration:
+        Types: 
+          - REGIONAL
+
+  # '/subscribe' resource path
+  SubscribeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'subscribe'
+
+  # '/subscribe' POST method
+  SubscribeMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref SubscribeResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      RequestParameters:
+        method.request.querystring.email: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:states:action/StartSyncExecution"
+        Credentials: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Role}"
+        RequestTemplates:
+          application/json: !Sub |
+            {
+              "stateMachineArn": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:topic-subscription",
+              "input": "{ \"email\": \"$input.params().querystring.get('email')\" }"
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: |
+                $input.path('$.output')
+          - StatusCode: 400
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: |
+                {
+                  "error": "Bad Request",
+                  "message": "$input.path('$.errorMessage')"
+                }
+            SelectionPattern: "Invalid.*"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+  
+  # '/subscribe' OPTIONS method for CORS preflight
+  SubscribeMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref SubscribeResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/send-otp' resource path
+  OTPResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'send-otp'
+
+  # '/send-otp' POST method
+  OTPMethodPost:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref OTPResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-${Env}-send-otp/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/otp' OPTIONS method for CORS preflight
+  OTPMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref OTPResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/create-event' resource path
+  CreateEventResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'create-event'
+
+  # '/create-event' POST method
+  CreateEventMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref CreateEventResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-${Env}-upload-event-image/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/create-event' OPTIONS method for CORS preflight
+  CreateEventMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref CreateEventResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/create-ticket' resource path
+  CreateTicketResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'create-ticket'
+
+  # '/create-ticket' POST method
+  CreateTicketMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref CreateTicketResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-${Env}-upload-ticket-qr/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/create-ticket' OPTIONS method for CORS preflight
+  CreateTicketMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref CreateTicketResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/get-qr-code' resource path
+  GetQRCodeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'get-qr-code'
+
+  # '/get-qr-code' POST method
+  GetQRCodeMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref GetQRCodeResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-${Env}-get-ticket-presigned-url/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # '/get-qr-code' OPTIONS method for CORS preflight
+  GetQRCodeMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref GetQRCodeResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # API Gateway '/log-activity' resource path
+  LogActivityResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'log-activity'
+  
+  # '/log-activity' POST method
+  LogActivityMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref LogActivityResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-${Env}-log-user-activity/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+  
+  # '/log-activity' OPTIONS method for CORS preflight
+  LogActivityMethodOptions:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref LogActivityResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # Update Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - SubscribeMethodPost
+      - SubscribeMethodOptions
+      - OTPMethodPost
+      - OTPMethodOptions
+      - CreateEventMethodPost
+      - CreateEventMethodOptions
+      - CreateTicketMethodPost
+      - CreateTicketMethodOptions
+      - LogActivityMethodPost
+      - LogActivityMethodOptions
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: !Ref Env
+
+  UsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn:
+      - ApiDeployment
+    Properties:
+      Description: Usage Plan for API Gateway
+      ApiStages:
+        - ApiId: !Ref ApiGatewayRestApi
+          Stage: !Ref Env
+          Throttle:
+            "/subscribe/POST": 
+              RateLimit: 50.0
+              BurstLimit: 100
+            "/send-otp/POST":
+              RateLimit: 20.0
+              BurstLimit: 50
+      Quota:
+        Limit: 1000
+        Period: MONTH
+      Throttle:
+        RateLimit: 100.0
+        BurstLimit: 200
+      UsagePlanName: !Sub "${Prefix}-${Env}-usage-plan"
+
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties: 
+      Description: API Key
+      Name: !Sub "${Prefix}-${Env}-api-key"
+      Enabled: True
+      
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref UsagePlan
+
+  # Grant permission for API Gateway to invoke the Lambda function
+  LambdaSNSTopicCheckingPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-${Env}-check-subscription"
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
+
+  # Grant SNS publish permissions to the Lambda function
+  LambdaSNSTopicPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-${Env}-send-otp"
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
+
+  # Grant permission for API Gateway to invoke the Lambda function
+  LambdaImageUploadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-${Env}-upload-event-image"
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
+
+  # Grant permission for API Gateway to invoke the Lambda function
+  LambdaTicketUploadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-${Env}-upload-ticket-qr"
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
+
+  # Grant permission for API Gateway to invoke the Lambda function
+  LambdaPresignedUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-${Env}-get-ticket-presigned-url"
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
+
+  # Grant permission for API Gateway to invoke the ActivityLog Lambda function
+  LambdaLogPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-${Env}-log-user-activity"
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*"
 
 # Mappings for AMI ID based on Region
 Mappings:
