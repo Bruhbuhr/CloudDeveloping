@@ -610,6 +610,10 @@ app.post('/ticket/generate-qr-code', verifyToken, async (req, res) => {
     }
 });
 
+app.get('/', (req, res) => {
+    res.status(200).json({ status: 'OK' });
+});
+
 // Start the server
 app.listen(port, '0.0.0.0', () => {
     console.log(`Server listening on port ${port}`);
