@@ -610,6 +610,7 @@ app.post('/ticket/generate-qr-code', verifyToken, async (req, res) => {
     }
 });
 
+// For healthcheck
 app.get('/', (req, res) => {
     res.status(200).json({ status: 'OK' });
 });
