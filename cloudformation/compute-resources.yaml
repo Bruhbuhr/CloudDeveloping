@@ -12,6 +12,9 @@ Parameters:
   InstanceProfile:
     Type: String
     Description: IAM instance profile for EC2 instance SSM connection
+  Role:
+    Type: String
+    Description: IAM role resources
 
 Resources:
   # VPC
@@ -248,10 +251,6 @@ Resources:
           FromPort: '80'
           ToPort: '80'
           CidrIp: '0.0.0.0/0'
-        - IpProtocol: tcp
-          FromPort: '443'
-          ToPort: '443'
-          CidrIp: '0.0.0.0/0'
       Tags:
         - Key: Name
           Value: !Sub '${Prefix}-${Env}-alb-sg'
@@ -328,31 +327,66 @@ Resources:
         - Key: Name
           Value: !Sub '${Prefix}-${Env}-cache-sg'
 
-  # EC2 Instance for Bastion Host
-  BastionHostInstance:
-    Type: AWS::EC2::Instance
+  # Launch Template for Bastion Host
+  BastionHostLaunchTemplate:
+    DependsOn: ECRepository
+    Type: 'AWS::EC2::LaunchTemplate'
     Properties:
-      InstanceType: t3.medium
-      KeyName: !Sub '${KeyPair}'
-      ImageId: !FindInMap [AMIMap, !Ref "AWS::Region", Ubuntu]
-      IamInstanceProfile: !Ref InstanceProfile
+      LaunchTemplateName: !Sub '${Prefix}-${Env}-bastion-template'
+      LaunchTemplateData:
+        ImageId: !FindInMap [AMIMap, !Ref "AWS::Region", AMAZONLINUX2023]
+        InstanceType: t3.micro
+        IamInstanceProfile:
+          Arn: !Sub 'arn:aws:iam::${AWS::AccountId}:instance-profile/${InstanceProfile}'
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+          InstanceMetadataTags: enabled
+        SecurityGroupIds:
+          - !Ref BastionSecurityGroup
+        KeyName: !Sub '${KeyPair}'
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeType: gp3
+              VolumeSize: 50
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -e
+            yum update -y && yum install -y docker git postgresql16 redis6 jq
+            systemctl start docker || true
+            systemctl enable docker
+            git clone -b khang/features https://github.com/Bruhbuhr/CloudDeveloping.git /tmp/CloudDeveloping && cd /tmp/CloudDeveloping/src
+            aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+            docker build -t ${Prefix}-${Env}-backend-service:latest .
+            docker tag ${Prefix}-${Env}-backend-service:latest ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${Prefix}-${Env}-backend-service:latest
+            docker push ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${Prefix}-${Env}-backend-service:latest
+            cd ../schema
+            SECRET=$(aws secretsmanager get-secret-value --secret-id ${Prefix}-${Env}-rds-credentials --query SecretString --output text)
+            DB_USERNAME=$(echo $SECRET | jq -r .username)
+            DB_PASSWORD=$(echo $SECRET | jq -r .password)
+            PGPASSWORD=$DB_PASSWORD psql -h ${RDSPostgreSQLInstance.Endpoint.Address} -U $DB_USERNAME -d tickerydb -f database.sql
+            export S3_BUCKET_URL="https://${Prefix}-${Env}-event-images.s3.${AWS::Region}.amazonaws.com"
+            sh replace.sh
+            PGPASSWORD=$DB_PASSWORD psql -h ${RDSPostgreSQLInstance.Endpoint.Address} -U $DB_USERNAME -d tickerydb -f events_modified.sql
+
+  # ECR Container Image
+  ECRepository:
+    Type: AWS::ECR::Repository
+    Properties: 
+      RepositoryName: !Sub '${Prefix}-${Env}-backend-service'
+      ImageScanningConfiguration: 
+        ScanOnPush: true
+
+  # # EC2 Instance for Bastion Host
+  BastionHostInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties: 
+      LaunchTemplate:
+        LaunchTemplateId: !Ref BastionHostLaunchTemplate
+        Version: !GetAtt BastionHostLaunchTemplate.LatestVersionNumber
       SubnetId: !Ref PublicSubnet1A
-      SecurityGroupIds:
-        - !Ref BastionSecurityGroup
-      BlockDeviceMappings:
-        - DeviceName: /dev/xvda
-          Ebs:
-            VolumeType: gp3
-            VolumeSize: 50
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          # Update the package repository and install Redis CLI and PostgreSQL client
-          sudo apt-get update -y
-          sudo apt-get install -y redis-tools postgresql-client
-          # Optionally, you can verify the installations
-          redis-cli --version
-          psql --version
       Tags:
         - Key: Name
           Value: !Sub '${Prefix}-${Env}-bastion'
@@ -365,7 +399,7 @@ Resources:
       DBInstanceClass: db.t3.small
       Engine: postgres
       EngineVersion: 16
-      DBName: !Sub '${Prefix}${Env}db'
+      DBName: 'tickerydb'
       MasterUsername: !Join ['', ['{{resolve:secretsmanager:', !Ref RDSSecret, ':SecretString:username}}' ]]
       MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref RDSSecret, ':SecretString:password}}' ]]
       DBSubnetGroupName: !Ref RDSSubnetGroup
@@ -386,7 +420,7 @@ Resources:
       Name: !Sub '${Prefix}-${Env}-rds-credentials'
       Description: !Sub 'RDS PostgreSQL credentials for ${Prefix}-${Env}'
       GenerateSecretString:
-        SecretStringTemplate: !Sub '{"username": "postgres","dbname":"${Prefix}${Env}db"}}'
+        SecretStringTemplate: !Sub '{"username": "postgres","dbname":"tickerydb"}}'
         GenerateStringKey: 'password'
         PasswordLength: 16
         ExcludePunctuation: true
@@ -394,22 +428,22 @@ Resources:
         - Key: Name
           Value: !Sub '${Prefix}-${Env}-rds-credentials'
 
-  # ElastiCache Redis Cluster
-  RedisCluster:
-    Type: AWS::ElastiCache::CacheCluster
-    Properties:
-      ClusterName: !Sub '${Prefix}-${Env}-redis-cluster'
-      Engine: redis
-      CacheNodeType: cache.t3.micro
-      NumCacheNodes: 1
-      AZMode: single-az
-      CacheSubnetGroupName: !Ref ElastiCacheSubnetGroup
-      CacheParameterGroupName: !Ref RedisParameterGroup
-      VpcSecurityGroupIds:
-        - !Ref ElastiCacheSecurityGroup
-      Tags:
-        - Key: Name
-          Value: !Sub '${Prefix}-${Env}-redis-cluster'
+  # # ElastiCache Redis Cluster
+  # RedisCluster:
+  #   Type: AWS::ElastiCache::CacheCluster
+  #   Properties:
+  #     ClusterName: !Sub '${Prefix}-${Env}-redis-cluster'
+  #     Engine: redis
+  #     CacheNodeType: cache.t3.micro
+  #     NumCacheNodes: 1
+  #     AZMode: single-az
+  #     CacheSubnetGroupName: !Ref ElastiCacheSubnetGroup
+  #     CacheParameterGroupName: !Ref RedisParameterGroup
+  #     VpcSecurityGroupIds:
+  #       - !Ref ElastiCacheSecurityGroup
+  #     Tags:
+  #       - Key: Name
+  #         Value: !Sub '${Prefix}-${Env}-redis-cluster'
 
   # Target Group Blue
   ELBTargetGroupBlue:
@@ -451,59 +485,21 @@ Resources:
       SecurityGroups: 
         - !Ref ALBSecurityGroup
 
-  # HTTPS Listener
-  HTTPSElbListener:
+  # HTTP Listener
+  HTTPElbListener:
     Type: 'AWS::ElasticLoadBalancingV2::Listener'
     Properties:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref ELBTargetGroupBlue
       LoadBalancerArn: !Ref ElasticLoadBalancer
-      Port: '443'
-      Protocol: HTTP
-
-  # HTTP Listener
-  HTTPElbListener:
-    Type: 'AWS::ElasticLoadBalancingV2::Listener'
-    Properties:
-      DefaultActions:
-        - Type: redirect
-          RedirectConfig:
-            Host: '#{host}'
-            Path: '/#{path}'
-            Port: '443'
-            Protocol: HTTPS
-            StatusCode: HTTP_302
-      LoadBalancerArn: !Ref ElasticLoadBalancer
       Port: '80'
       Protocol: HTTP
-
-  # ECR Container Image
-  ECRepository:
-    Type: AWS::ECR::Repository
-    Properties: 
-      RepositoryName: !Sub '${Prefix}-${Env}-backend-service'
-      ImageScanningConfiguration: 
-        ScanOnPush: true
-
-  # ECS Cluster (Fargate)
-  ECSCluster:
-    Type: AWS::ECS::Cluster
-    Properties:
-      ClusterName: !Sub '${Prefix}-${Env}-ecs-cluster'
-      CapacityProviders:
-        - FARGATE
-        - FARGATE_SPOT
-      DefaultCapacityProviderStrategy:
-        - CapacityProvider: FARGATE
-          Weight: 1
-        - CapacityProvider: FARGATE_SPOT
-          Weight: 1
 
 # Mappings for AMI ID based on Region
 Mappings:
   AMIMap:
     ap-southeast-1:
-      Ubuntu: ami-045f9c1ecb56d9532
+      AMAZONLINUX2023: ami-0995922d49dc9a17d
     us-east-1:
-      Ubuntu: ami-04552bb4f4dd38925
+      AMAZONLINUX2023: ami-01816d07b1128cd2d

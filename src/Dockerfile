@@ -1,20 +1,12 @@
-# Dockerfile
-FROM node:20
-
-# Set working directory
+FROM node:20-slim AS build
 WORKDIR /usr/src/app
-
-# Copy package.json and package-lock.json
 COPY package*.json ./
-
-# Install dependencies
 RUN npm install
 
-# Copy application source
+FROM node:20-slim
+WORKDIR /usr/src/app
+COPY --from=build /usr/src/app /usr/src/app
 COPY . .
 
-# Expose the application port
 EXPOSE 3000
-
-# Start the application
 CMD ["node", "app.js"]
